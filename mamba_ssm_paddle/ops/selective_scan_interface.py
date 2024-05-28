@@ -1,37 +1,49 @@
 # Copyright (c) 2023, Tri Dao, Albert Gu.
-
-import torch
-import torch.nn.functional as F
-from torch.cuda.amp import custom_bwd, custom_fwd
+import paddle
+import paddle.nn.functional as F
 
 from einops import rearrange, repeat
+from paddle.autograd import PyLayer
 
 try:
-    from causal_conv1d import causal_conv1d_fn
-    import causal_conv1d_cuda
+    from .causal_conv1d_interface import causal_conv1d_fn
 except ImportError:
     causal_conv1d_fn = None
+    
+try:
+    import causal_conv1d_cuda_paddle as causal_conv1d_cuda
+except ImportError:
     causal_conv1d_cuda = None
+    print("causal_conv1d_cuda_paddle is not found. Please install it.")
 
-import selective_scan_cuda
+try:
+    import selective_scan_cuda_paddle as selective_scan_cuda
+except:
+    selective_scan_cuda = None
+    print("selective_scan_cuda_paddle is not found. Please install it.")
 
+def backward_return_wrapper(*args):
+    result = []
+    for each in args:
+        if each is not None and isinstance(each, paddle.Tensor):
+            result.append(each)
+    return tuple(result)
 
-class SelectiveScanFn(torch.autograd.Function):
-
+class SelectiveScanFn(PyLayer):
     @staticmethod
     def forward(ctx, u, delta, A, B, C, D=None, z=None, delta_bias=None, delta_softplus=False,
                 return_last_state=False):
-        if u.stride(-1) != 1:
+        if u.strides[-1] != 1:
             u = u.contiguous()
-        if delta.stride(-1) != 1:
+        if delta.strides[-1] != 1:
             delta = delta.contiguous()
         if D is not None:
             D = D.contiguous()
-        if B.stride(-1) != 1:
+        if B.strides[-1] != 1:
             B = B.contiguous()
-        if C.stride(-1) != 1:
+        if C.strides[-1] != 1:
             C = C.contiguous()
-        if z is not None and z.stride(-1) != 1:
+        if z is not None and z.strides[-1] != 1:
             z = z.contiguous()
         if B.dim() == 3:
             B = rearrange(B, "b dstate l -> b 1 dstate l")
@@ -54,12 +66,12 @@ class SelectiveScanFn(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dout, *args):
         if not ctx.has_z:
-            u, delta, A, B, C, D, delta_bias, x = ctx.saved_tensors
+            u, delta, A, B, C, D, delta_bias, x = ctx.saved_tensor()
             z = None
             out = None
         else:
-            u, delta, A, B, C, D, z, delta_bias, x, out = ctx.saved_tensors
-        if dout.stride(-1) != 1:
+            u, delta, A, B, C, D, z, delta_bias, x, out = ctx.saved_tensor()
+        if dout.strides[-1] != 1:
             dout = dout.contiguous()
         # The kernel supports passing in a pre-allocated dz (e.g., in case we want to fuse the
         # backward of selective_scan_cuda with the backward of chunk).
@@ -71,13 +83,17 @@ class SelectiveScanFn(torch.autograd.Function):
         dz = rest[0] if ctx.has_z else None
         dB = dB.squeeze(1) if getattr(ctx, "squeeze_B", False) else dB
         dC = dC.squeeze(1) if getattr(ctx, "squeeze_C", False) else dC
-        return (du, ddelta, dA, dB, dC,
-                dD if D is not None else None,
-                dz,
-                ddelta_bias if delta_bias is not None else None,
-                None,
-                None)
-
+        
+        return backward_return_wrapper(
+            du,
+            ddelta,
+            dA,
+            dB,
+            dC,
+            dD if D is not None else None,
+            dz,
+            ddelta_bias if delta_bias is not None else None,
+        )
 
 def selective_scan_fn(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta_softplus=False,
                      return_last_state=False):
@@ -104,63 +120,56 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     last_state (optional): r(B D dstate) or c(B D dstate)
     """
     dtype_in = u.dtype
-    u = u.float()
-    delta = delta.float()
+    u = u.cast("float32")
+    delta = delta.cast("float32")
     if delta_bias is not None:
-        delta = delta + delta_bias[..., None].float()
+        delta = delta + delta_bias[..., None].cast("float32")
     if delta_softplus:
-        delta = F.softplus(delta)
+        delta = paddle.nn.functional.softplus(delta)
     batch, dim, dstate = u.shape[0], A.shape[0], A.shape[1]
     is_variable_B = B.dim() >= 3
     is_variable_C = C.dim() >= 3
-    if A.is_complex():
-        if is_variable_B:
-            B = torch.view_as_complex(rearrange(B.float(), "... (L two) -> ... L two", two=2))
-        if is_variable_C:
-            C = torch.view_as_complex(rearrange(C.float(), "... (L two) -> ... L two", two=2))
-    else:
-        B = B.float()
-        C = C.float()
-    x = A.new_zeros((batch, dim, dstate))
+    B = B.cast("float32")
+    C = C.cast("float32")
+    x = paddle.zeros((batch, dim, dstate), dtype=A.dtype)
     ys = []
-    deltaA = torch.exp(torch.einsum('bdl,dn->bdln', delta, A))
+    deltaA = paddle.exp(paddle.einsum("bdl,dn->bdln", delta, A))
     if not is_variable_B:
-        deltaB_u = torch.einsum('bdl,dn,bdl->bdln', delta, B, u)
+        deltaB_u = paddle.einsum("bdl,dn,bdl->bdln", delta, B, u)
     else:
         if B.dim() == 3:
-            deltaB_u = torch.einsum('bdl,bnl,bdl->bdln', delta, B, u)
+            deltaB_u = paddle.einsum("bdl,bnl,bdl->bdln", delta, B, u)
         else:
             B = repeat(B, "B G N L -> B (G H) N L", H=dim // B.shape[1])
-            deltaB_u = torch.einsum('bdl,bdnl,bdl->bdln', delta, B, u)
+            deltaB_u = paddle.einsum("bdl,bdnl,bdl->bdln", delta, B, u)
     if is_variable_C and C.dim() == 4:
         C = repeat(C, "B G N L -> B (G H) N L", H=dim // C.shape[1])
     last_state = None
     for i in range(u.shape[2]):
         x = deltaA[:, :, i] * x + deltaB_u[:, :, i]
         if not is_variable_C:
-            y = torch.einsum('bdn,dn->bd', x, C)
+            y = paddle.einsum("bdn,dn->bd", x, C)
         else:
             if C.dim() == 3:
-                y = torch.einsum('bdn,bn->bd', x, C[:, :, i])
+                y = paddle.einsum("bdn,bn->bd", x, C[:, :, i])
             else:
-                y = torch.einsum('bdn,bdn->bd', x, C[:, :, :, i])
+                y = paddle.einsum("bdn,bdn->bd", x, C[:, :, :, i])
         if i == u.shape[2] - 1:
             last_state = x
         if y.is_complex():
             y = y.real * 2
         ys.append(y)
-    y = torch.stack(ys, dim=2) # (batch dim L)
+    y = paddle.stack(ys, axis=2)  # (batch dim L)
     out = y if D is None else y + u * rearrange(D, "d -> d 1")
     if z is not None:
-        out = out * F.silu(z)
-    out = out.to(dtype=dtype_in)
+        out = out * paddle.nn.functional.silu(z)
+    out = out.cast(dtype=dtype_in)
     return out if not return_last_state else (out, last_state)
 
 
-class MambaInnerFn(torch.autograd.Function):
+class MambaInnerFn(PyLayer):
 
     @staticmethod
-    @custom_fwd
     def forward(ctx, xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
                 out_proj_weight, out_proj_bias,
                 A, B=None, C=None, D=None, delta_bias=None, B_proj_bias=None,
@@ -173,16 +182,14 @@ class MambaInnerFn(torch.autograd.Function):
         L = xz.shape[-1]
         delta_rank = delta_proj_weight.shape[1]
         d_state = A.shape[-1] * (1 if not A.is_complex() else 2)
-        if torch.is_autocast_enabled():
-            x_proj_weight = x_proj_weight.to(dtype=torch.get_autocast_gpu_dtype())
-            delta_proj_weight = delta_proj_weight.to(dtype=torch.get_autocast_gpu_dtype())
-            out_proj_weight = out_proj_weight.to(dtype=torch.get_autocast_gpu_dtype())
-            out_proj_bias = (out_proj_bias.to(dtype=torch.get_autocast_gpu_dtype())
-                             if out_proj_bias is not None else None)
-        if xz.stride(-1) != 1:
+        if xz.strides[-1] != 1:
             xz = xz.contiguous()
         conv1d_weight = rearrange(conv1d_weight, "d 1 w -> d w")
-        x, z = xz.chunk(2, dim=1)
+        # x, z = xz.chunk(2, axis=1)
+        half_xz = xz.shape[1] // 2
+        x = xz[:, :half_xz]
+        z = xz[:, half_xz:]
+        
         conv1d_bias = conv1d_bias.contiguous() if conv1d_bias is not None else None
         conv1d_out = causal_conv1d_cuda.causal_conv1d_fwd(
             x, conv1d_weight, conv1d_bias, None, None, None, True
@@ -190,7 +197,7 @@ class MambaInnerFn(torch.autograd.Function):
         # We're being very careful here about the layout, to avoid extra transposes.
         # We want delta to have d as the slowest moving dimension
         # and L as the fastest moving dimension, since those are what the ssm_scan kernel expects.
-        x_dbl = F.linear(rearrange(conv1d_out, 'b d l -> (b l) d'), x_proj_weight)  # (bl d)
+        x_dbl = F.linear(rearrange(conv1d_out, 'b d l -> (b l) d'), x_proj_weight.t())  # (bl d)
         delta = rearrange(delta_proj_weight @ x_dbl[:, :delta_rank].t(), "d (b l) -> b d l", l = L)
         ctx.is_variable_B = B is None
         ctx.is_variable_C = C is None
@@ -199,26 +206,26 @@ class MambaInnerFn(torch.autograd.Function):
         if B is None:  # variable B
             B = x_dbl[:, delta_rank:delta_rank + d_state]  # (bl dstate)
             if B_proj_bias is not None:
-                B = B + B_proj_bias.to(dtype=B.dtype)
+                B = B + B_proj_bias.cast(dtype=B.dtype)
             if not A.is_complex():
                 # B = rearrange(B, "(b l) dstate -> b dstate l", l=L).contiguous()
                 B = rearrange(B, "(b l) dstate -> b 1 dstate l", l=L).contiguous()
             else:
                 B = rearrange(B, "(b l) (dstate two) -> b 1 dstate (l two)", l=L, two=2).contiguous()
         else:
-            if B.stride(-1) != 1:
+            if B.strides[-1] != 1:
                 B = B.contiguous()
         if C is None:  # variable C
             C = x_dbl[:, -d_state:]  # (bl dstate)
             if C_proj_bias is not None:
-                C = C + C_proj_bias.to(dtype=C.dtype)
+                C = C + C_proj_bias.cast(dtype=C.dtype)
             if not A.is_complex():
                 # C = rearrange(C, "(b l) dstate -> b dstate l", l=L).contiguous()
                 C = rearrange(C, "(b l) dstate -> b 1 dstate l", l=L).contiguous()
             else:
                 C = rearrange(C, "(b l) (dstate two) -> b 1 dstate (l two)", l=L, two=2).contiguous()
         else:
-            if C.stride(-1) != 1:
+            if C.strides[-1] != 1:
                 C = C.contiguous()
         if D is not None:
             D = D.contiguous()
@@ -233,20 +240,19 @@ class MambaInnerFn(torch.autograd.Function):
         ctx.save_for_backward(xz, conv1d_weight, conv1d_bias, x_dbl, x_proj_weight,
                               delta_proj_weight, out_proj_weight, conv1d_out, delta,
                               A, B, C, D, delta_bias, scan_intermediates, out)
-        return F.linear(rearrange(out_z, "b d l -> b l d"), out_proj_weight, out_proj_bias)
+        return F.linear(rearrange(out_z, "b d l -> b l d"), out_proj_weight.t(), out_proj_bias)
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, dout):
         # dout: (batch, seqlen, dim)
         assert causal_conv1d_cuda is not None, "causal_conv1d_cuda is not available. Please install causal-conv1d."
         (xz, conv1d_weight, conv1d_bias, x_dbl, x_proj_weight, delta_proj_weight, out_proj_weight,
-         conv1d_out, delta, A, B, C, D, delta_bias, scan_intermediates, out) = ctx.saved_tensors
+         conv1d_out, delta, A, B, C, D, delta_bias, scan_intermediates, out) = ctx.saved_tensor()
         L = xz.shape[-1]
         delta_rank = delta_proj_weight.shape[1]
         d_state = A.shape[-1] * (1 if not A.is_complex() else 2)
-        x, z = xz.chunk(2, dim=1)
-        if dout.stride(-1) != 1:
+        x, z = xz.chunk(2, axis=1)
+        if dout.strides[-1] != 1:
             dout = dout.contiguous()
         if ctx.checkpoint_lvl == 1:
             conv1d_out = causal_conv1d_cuda.causal_conv1d_fwd(
@@ -256,8 +262,12 @@ class MambaInnerFn(torch.autograd.Function):
                               "d (b l) -> b d l", l = L)
         # The kernel supports passing in a pre-allocated dz (e.g., in case we want to fuse the
         # backward of selective_scan_cuda with the backward of chunk).
-        dxz = torch.empty_like(xz)  # (batch, dim, seqlen)
-        dx, dz = dxz.chunk(2, dim=1)
+        dxz = paddle.empty_like(xz)  # (batch, dim, seqlen)
+        # dx, dz = dxz.chunk(2, axis=1)
+        half_dxz = dxz.shape[1] // 2
+        dx = dxz[:, :half_dxz]
+        dz = dxz[:, half_dxz:]
+        
         dout = rearrange(dout, "b l e -> e (b l)")
         dout_y = rearrange(out_proj_weight.t() @ dout, "d (b l) -> b d l", l=L)
         dconv1d_out, ddelta, dA, dB, dC, dD, ddelta_bias, dz, out_z = selective_scan_cuda.bwd(
@@ -265,10 +275,10 @@ class MambaInnerFn(torch.autograd.Function):
             ctx.delta_softplus,
             True  # option to recompute out_z
         )
-        dout_proj_weight = torch.einsum("eB,dB->ed", dout, rearrange(out_z, "b d l -> d (b l)"))
-        dout_proj_bias = dout.sum(dim=(0, 1)) if not ctx.out_proj_bias_is_None else None
+        dout_proj_weight = paddle.einsum("eB,dB->ed", dout, rearrange(out_z, "b d l -> d (b l)"))
+        dout_proj_bias = dout.sum(axis=(0, 1)) if not ctx.out_proj_bias_is_None else None
         dD = dD if D is not None else None
-        dx_dbl = torch.empty_like(x_dbl)
+        dx_dbl = paddle.empty_like(x_dbl)
         dB_proj_bias = None
         if ctx.is_variable_B:
             if not A.is_complex():
@@ -288,32 +298,38 @@ class MambaInnerFn(torch.autograd.Function):
             dx_dbl[:, -d_state:] = dC  # (bl d)
             dC = None
         ddelta = rearrange(ddelta, "b d l -> d (b l)")
-        ddelta_proj_weight = torch.einsum("dB,Br->dr", ddelta, x_dbl[:, :delta_rank])
-        dx_dbl[:, :delta_rank] = torch.einsum("dB,dr->Br", ddelta, delta_proj_weight)
+        ddelta_proj_weight = paddle.einsum("dB,Br->dr", ddelta, x_dbl[:, :delta_rank])
+        dx_dbl[:, :delta_rank] = paddle.einsum("dB,dr->Br", ddelta, delta_proj_weight)
         dconv1d_out = rearrange(dconv1d_out, "b d l -> d (b l)")
-        dx_proj_weight = torch.einsum("Br,Bd->rd", dx_dbl, rearrange(conv1d_out, "b d l -> (b l) d"))
-        dconv1d_out = torch.addmm(dconv1d_out, x_proj_weight.t(), dx_dbl.t(), out=dconv1d_out)
+        dx_proj_weight = paddle.einsum("Br,Bd->rd", dx_dbl, rearrange(conv1d_out, "b d l -> (b l) d"))
+        dconv1d_out = paddle.addmm(dconv1d_out, x_proj_weight.t(), dx_dbl.t())
         dconv1d_out = rearrange(dconv1d_out, "d (b l) -> b d l", b=x.shape[0], l=x.shape[-1])
         # The kernel supports passing in a pre-allocated dx (e.g., in case we want to fuse the
         # backward of conv1d with the backward of chunk).
+                
         dx, dconv1d_weight, dconv1d_bias, *_ = causal_conv1d_cuda.causal_conv1d_bwd(
             x, conv1d_weight, conv1d_bias, dconv1d_out, None, None, None, dx, False, True
         )
         dconv1d_bias = dconv1d_bias if conv1d_bias is not None else None
         dconv1d_weight = rearrange(dconv1d_weight, "d w -> d 1 w")
-        return (dxz, dconv1d_weight, dconv1d_bias, dx_proj_weight, ddelta_proj_weight,
+        
+        return backward_return_wrapper(dxz, dconv1d_weight, dconv1d_bias, dx_proj_weight, ddelta_proj_weight,
                 dout_proj_weight, dout_proj_bias,
                 dA, dB, dC, dD,
                 ddelta_bias if delta_bias is not None else None,
                 dB_proj_bias, dC_proj_bias, None)
 
-
 def mamba_inner_fn(
     xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
     out_proj_weight, out_proj_bias,
     A, B=None, C=None, D=None, delta_bias=None, B_proj_bias=None,
-    C_proj_bias=None, delta_softplus=True
+    C_proj_bias=None, delta_softplus=True, is_paddle_linear=False,
 ):
+    if is_paddle_linear:
+        # NOTE: paddle linear weight is transposed
+        x_proj_weight = x_proj_weight.t().contiguous()
+        out_proj_weight = out_proj_weight.t().contiguous()
+        delta_proj_weight = delta_proj_weight.t().contiguous()
     return MambaInnerFn.apply(xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
                               out_proj_weight, out_proj_bias,
                               A, B, C, D, delta_bias, B_proj_bias, C_proj_bias, delta_softplus)
@@ -323,24 +339,29 @@ def mamba_inner_ref(
     xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
     out_proj_weight, out_proj_bias,
     A, B=None, C=None, D=None, delta_bias=None, B_proj_bias=None,
-    C_proj_bias=None, delta_softplus=True
+    C_proj_bias=None, delta_softplus=True, is_paddle_linear=False,
 ):
+    if is_paddle_linear:
+        # NOTE: paddle linear weight is transposed
+        x_proj_weight = x_proj_weight.t().contiguous()
+        out_proj_weight = out_proj_weight.t().contiguous()
+        delta_proj_weight = delta_proj_weight.t().contiguous()
     assert causal_conv1d_fn is not None, "causal_conv1d_fn is not available. Please install causal-conv1d."
     L = xz.shape[-1]
     delta_rank = delta_proj_weight.shape[1]
     d_state = A.shape[-1] * (1 if not A.is_complex() else 2)
-    x, z = xz.chunk(2, dim=1)
+    x, z = xz.chunk(2, axis=1)
     x = causal_conv1d_fn(x, rearrange(conv1d_weight, "d 1 w -> d w"), conv1d_bias, activation="silu")
     # We're being very careful here about the layout, to avoid extra transposes.
     # We want delta to have d as the slowest moving dimension
     # and L as the fastest moving dimension, since those are what the ssm_scan kernel expects.
-    x_dbl = F.linear(rearrange(x, 'b d l -> (b l) d'), x_proj_weight)  # (bl d)
+    x_dbl = F.linear(rearrange(x, 'b d l -> (b l) d'), x_proj_weight.t())  # (bl d)
     delta = delta_proj_weight @ x_dbl[:, :delta_rank].t()
     delta = rearrange(delta, "d (b l) -> b d l", l=L)
     if B is None:  # variable B
         B = x_dbl[:, delta_rank:delta_rank + d_state]  # (bl d)
         if B_proj_bias is not None:
-            B = B + B_proj_bias.to(dtype=B.dtype)
+            B = B + B_proj_bias.cast(dtype=B.dtype)
         if not A.is_complex():
             B = rearrange(B, "(b l) dstate -> b dstate l", l=L).contiguous()
         else:
@@ -348,10 +369,10 @@ def mamba_inner_ref(
     if C is None:  # variable B
         C = x_dbl[:, -d_state:]  # (bl d)
         if C_proj_bias is not None:
-            C = C + C_proj_bias.to(dtype=C.dtype)
+            C = C + C_proj_bias.cast(dtype=C.dtype)
         if not A.is_complex():
             C = rearrange(C, "(b l) dstate -> b dstate l", l=L).contiguous()
         else:
             C = rearrange(C, "(b l) (dstate two) -> b dstate (l two)", l=L, two=2).contiguous()
     y = selective_scan_fn(x, delta, A, B, C, D, z=z, delta_bias=delta_bias, delta_softplus=True)
-    return F.linear(rearrange(y, "b d l -> b l d"), out_proj_weight, out_proj_bias)
+    return F.linear(rearrange(y, "b d l -> b l d"), out_proj_weight.t(), out_proj_bias)

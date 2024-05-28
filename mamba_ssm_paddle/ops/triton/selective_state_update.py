@@ -3,9 +3,8 @@
 """We want triton==2.1.0 or triton==2.2.0 or triton==2.3.0 for this
 """
 
-import math
-import torch
-import torch.nn.functional as F
+import paddle
+import paddle.nn.functional as F
 
 import triton
 import triton.language as tl
@@ -151,22 +150,22 @@ def selective_state_update(state, x, dt, A, B, C, D=None, z=None, dt_bias=None, 
     if dt_bias is not None and dt_bias.dim() == 1:
         dt_bias = dt_bias.unsqueeze(0)
     batch, nheads, dim, dstate = state.shape
-    assert x.shape == (batch, nheads, dim)
+    assert x.shape == [batch, nheads, dim]
     assert dt.shape == x.shape
-    assert A.shape == (nheads, dim, dstate)
+    assert A.shape == [nheads, dim, dstate]
     ngroups = B.shape[1]
     assert nheads % ngroups == 0, "nheads must be divisible by ngroups"
-    assert B.shape == (batch, ngroups, dstate)
+    assert B.shape == [batch, ngroups, dstate]
     assert C.shape == B.shape
     if D is not None:
-        assert D.shape == (nheads, dim)
+        assert D.shape == [nheads, dim]
     if z is not None:
         assert z.shape == x.shape
     if dt_bias is not None:
-        assert dt_bias.shape == (nheads, dim)
-    out = torch.empty_like(x)
+        assert dt_bias.shape == [nheads, dim]
+    out = paddle.empty_like(x)
     grid = lambda META: (triton.cdiv(dim, META['BLOCK_SIZE_M']), batch, nheads)
-    z_strides = ((z.stride(0), z.stride(1), z.stride(2)) if z is not None else (0, 0, 0))
+    z_strides = (z.strides[0], z.strides[1], z.strides[2]) if z is not None else (0, 0, 0)
     # We don't want autotune since it will overwrite the state
     # We instead tune by hand.
     BLOCK_SIZE_M, num_warps = ((32, 4) if dstate <= 16
@@ -174,26 +173,25 @@ def selective_state_update(state, x, dt, A, B, C, D=None, z=None, dt_bias=None, 
                                      ((8, 4) if dstate <= 64 else
                                       ((4, 4) if dstate <= 128 else
                                        ((4, 8))))))
-    tie_hdim = A.stride(-1) == 0 and A.stride(-2) == 0 and dt.stride(-1) == 0 and dt_bias.stride(-1) == 0
-    with torch.cuda.device(x.device.index):
-        _selective_scan_update_kernel[grid](
-            state, x, dt, dt_bias, A, B, C, D, z, out,
-            batch, nheads, dim, dstate, nheads // ngroups,
-            state.stride(0), state.stride(1), state.stride(2), state.stride(3),
-            x.stride(0), x.stride(1), x.stride(2),
-            dt.stride(0), dt.stride(1), dt.stride(2),
-            *(dt_bias.stride(0), dt_bias.stride(1)) if dt_bias is not None else 0,
-            A.stride(0), A.stride(1), A.stride(2),
-            B.stride(0), B.stride(1), B.stride(2),
-            C.stride(0), C.stride(1), C.stride(2),
-            *(D.stride(0), D.stride(1)) if D is not None else 0,
-            z_strides[0], z_strides[1], z_strides[2],
-            out.stride(0), out.stride(1), out.stride(2),
-            dt_softplus,
-            tie_hdim,
-            BLOCK_SIZE_M,
-            num_warps=num_warps,
-        )
+    tie_hdim = A.strides[-1] == 0 and A.strides[-2] == 0 and dt.strides[-1] == 0 and dt_bias.strides[-1] == 0
+    _selective_scan_update_kernel[grid](
+        state, x, dt, dt_bias, A, B, C, D, z, out,
+        batch, nheads, dim, dstate, nheads // ngroups,
+        state.strides[0], state.strides[1], state.strides[2], state.strides[3],
+        x.strides[0], x.strides[1], x.strides[2],
+        dt.strides[0], dt.strides[1], dt.strides[2],
+        *(dt_bias.strides[0], dt_bias.strides[1]) if dt_bias is not None else 0,
+        A.strides[0], A.strides[1], A.strides[2],
+        B.strides[0], B.strides[1], B.strides[2],
+        C.strides[0], C.strides[1], C.strides[2],
+        *(D.strides[0], D.strides[1]) if D is not None else 0,
+        z_strides[0], z_strides[1], z_strides[2],
+        out.strides[0], out.strides[1], out.strides[2],
+        dt_softplus,
+        tie_hdim,
+        BLOCK_SIZE_M,
+        num_warps=num_warps,
+    )
     if not has_heads:
         out = out.squeeze(1)
     return out
@@ -234,30 +232,30 @@ def selective_state_update_ref(state, x, dt, A, B, C, D=None, z=None, dt_bias=No
     if dt_bias is not None and dt_bias.dim() == 1:
         dt_bias = dt_bias.unsqueeze(0)
     batch, nheads, dim, dstate = state.shape
-    assert x.shape == (batch, nheads, dim)
+    assert x.shape == [batch, nheads, dim]
     assert dt.shape == x.shape
-    assert A.shape == (nheads, dim, dstate)
+    assert A.shape == [nheads, dim, dstate]
     ngroups = B.shape[1]
     assert nheads % ngroups == 0, "nheads must be divisible by ngroups"
-    assert B.shape == (batch, ngroups, dstate)
+    assert B.shape == [batch, ngroups, dstate]
     assert C.shape == B.shape
     if D is not None:
-        assert D.shape == (nheads, dim)
+        assert D.shape == [nheads, dim]
     if z is not None:
         assert z.shape == x.shape
     if dt_bias is not None:
-        assert dt_bias.shape == (nheads, dim)
+        assert dt_bias.shape == [nheads, dim]
         dt = dt + dt_bias
     dt = F.softplus(dt) if dt_softplus else dt
-    dA = torch.exp(rearrange(dt, "b h d -> b h d 1") * A)  # (batch, nheads, dim, dstate)
+    dA = paddle.exp(rearrange(dt, "b h d -> b h d 1") * A)  # (batch, nheads, dim, dstate)
     B = repeat(B, "b g n -> b (g h) n", h=nheads // ngroups)  # (batch, nheads, dstate)
     C = repeat(C, "b g n -> b (g h) n", h=nheads // ngroups)  # (batch, nheads, dstate)
     dB = rearrange(dt, "b h d -> b h d 1") * rearrange(B, "b h n -> b h 1 n")  # (batch, nheads, dim, dstate)
-    state.copy_(state * dA + dB * rearrange(x, "b h d -> b h d 1"))  # (batch, dim, dstate
-    out = torch.einsum("bhdn,bhn->bhd", state.to(C.dtype), C)
+    state.copy_((state * dA + dB * rearrange(x, "b h d -> b h d 1")).cast(state.dtype), False)  # (batch, dim, dstate
+    out = paddle.einsum("bhdn,bhn->bhd", state.cast(C.dtype), C)
     if D is not None:
-        out += (x * D).to(out.dtype)
-    out = (out if z is None else out * F.silu(z)).to(x.dtype)
+        out += (x * D).cast(out.dtype)
+    out = (out if z is None else out * F.silu(z)).cast(x.dtype)
     if not has_heads:
         out = out.squeeze(1)
     return out

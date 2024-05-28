@@ -8,25 +8,27 @@
 
 import math
 
-import torch
-import torch.nn.functional as F
-from torch.cuda.amp import custom_fwd, custom_bwd
+import paddle
+import paddle.nn as nn
+import paddle.nn.functional as F
+from paddle.autograd import PyLayer
 
 import triton
 import triton.language as tl
 
+from paddle.amp.auto_cast import amp_global_state
 
 def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
     dtype = x.dtype
     if upcast:
-        weight = weight.float()
-        bias = bias.float() if bias is not None else None
+        weight = weight.cast("float32")
+        bias = bias.cast("float32") if bias is not None else None
     if upcast:
-        x = x.float()
-        residual = residual.float() if residual is not None else residual
+        x = x.cast("float32")
+        residual = residual.cast("float32") if residual is not None else residual
     if residual is not None:
-        x = (x + residual).to(x.dtype)
-    out = F.layer_norm(x.to(weight.dtype), x.shape[-1:], weight=weight, bias=bias, eps=eps).to(
+        x = (x + residual).cast(x.dtype)
+    out = F.layer_norm(x.cast(weight.dtype), x.shape[-1:], weight=weight, bias=bias, epsilon=eps).cast(
         dtype
     )
     return out if not prenorm else (out, x)
@@ -35,16 +37,16 @@ def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upca
 def rms_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
     dtype = x.dtype
     if upcast:
-        weight = weight.float()
-        bias = bias.float() if bias is not None else None
+        weight = weight.cast("float32")
+        bias = bias.cast("float32") if bias is not None else None
     if upcast:
-        x = x.float()
-        residual = residual.float() if residual is not None else residual
+        x = x.cast("float32")
+        residual = residual.cast("float32") if residual is not None else residual
     if residual is not None:
-        x = (x + residual).to(x.dtype)
-    rstd = 1 / torch.sqrt((x.square()).mean(dim=-1, keepdim=True) + eps)
+        x = (x + residual).cast(x.dtype)
+    rstd = 1 / paddle.sqrt((x.square()).mean(axis=-1, keepdim=True) + eps)
     out = (x * rstd * weight) + bias if bias is not None else (x * rstd * weight)
-    out = out.to(dtype)
+    out = out.cast(dtype)
     return out if not prenorm else (out, x)
 
 
@@ -126,53 +128,52 @@ def _layer_norm_fwd(
     if residual is not None:
         residual_dtype = residual.dtype
     M, N = x.shape
-    assert x.stride(-1) == 1
+    assert x.strides[-1] == 1
     if residual is not None:
-        assert residual.stride(-1) == 1
+        assert residual.strides[-1] == 1
         assert residual.shape == (M, N)
     assert weight.shape == (N,)
-    assert weight.stride(-1) == 1
+    assert weight.strides[-1] == 1
     if bias is not None:
-        assert bias.stride(-1) == 1
+        assert bias.strides[-1] == 1
         assert bias.shape == (N,)
     # allocate output
-    y = torch.empty_like(x, dtype=x.dtype if out_dtype is None else out_dtype)
-    assert y.stride(-1) == 1
+    y = paddle.empty_like(x, dtype=x.dtype if out_dtype is None else out_dtype)
+    assert y.strides[-1] == 1
     if residual is not None or (residual_dtype is not None and residual_dtype != x.dtype):
-        residual_out = torch.empty(M, N, device=x.device, dtype=residual_dtype)
-        assert residual_out.stride(-1) == 1
+        residual_out = paddle.empty([M, N], dtype=residual_dtype)
+        assert residual_out.strides[-1] == 1
     else:
         residual_out = None
-    mean = torch.empty((M,), dtype=torch.float32, device=x.device) if not is_rms_norm else None
-    rstd = torch.empty((M,), dtype=torch.float32, device=x.device)
+    mean = paddle.empty((M,), dtype=paddle.float32) if not is_rms_norm else None
+    rstd = paddle.empty((M,), dtype=paddle.float32)
     # Less than 64KB per feature: enqueue fused kernel
     MAX_FUSED_SIZE = 65536 // x.element_size()
     BLOCK_N = min(MAX_FUSED_SIZE, triton.next_power_of_2(N))
     if N > BLOCK_N:
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
     # heuristics for number of warps
-    with torch.cuda.device(x.device.index):
-        _layer_norm_fwd_1pass_kernel[(M,)](
-            x,
-            y,
-            weight,
-            bias,
-            residual,
-            residual_out,
-            mean,
-            rstd,
-            x.stride(0),
-            y.stride(0),
-            residual.stride(0) if residual is not None else 0,
-            residual_out.stride(0) if residual_out is not None else 0,
-            N,
-            eps,
-            is_rms_norm,
-            BLOCK_N,
-            residual is not None,
-            residual_out is not None,
-            bias is not None,
-        )
+    _layer_norm_fwd_1pass_kernel[(M,)](
+        x,
+        y,
+        weight,
+        bias,
+        residual,
+        residual_out,
+        mean,
+        rstd,
+        x.strides[0],
+        y.strides[0],
+        residual.strides[0] if residual is not None else 0,
+        residual_out.strides[0] if residual_out is not None else 0,
+        N,
+        eps,
+        is_rms_norm,
+        BLOCK_N,
+        residual is not None,
+        residual_out is not None,
+        bias is not None,
+    )
     # residual_out is None if residual is None and residual_dtype == input_dtype
     return y, mean, rstd, residual_out if residual_out is not None else x
 
@@ -305,79 +306,78 @@ def _layer_norm_bwd(
     recompute_output=False,
 ):
     M, N = x.shape
-    assert x.stride(-1) == 1
-    assert dy.stride(-1) == 1
-    assert dy.shape == (M, N)
+    assert x.strides[-1] == 1
+    assert dy.strides[-1] == 1
+    assert dy.shape == [M, N]
     if dresidual is not None:
-        assert dresidual.stride(-1) == 1
-        assert dresidual.shape == (M, N)
-    assert weight.shape == (N,)
-    assert weight.stride(-1) == 1
+        assert dresidual.strides[-1] == 1
+        assert dresidual.shape == [M, N]
+    assert weight.shape == [N,]
+    assert weight.strides[-1] == 1
     if bias is not None:
-        assert bias.stride(-1) == 1
-        assert bias.shape == (N,)
+        assert bias.strides[-1] == 1
+        assert bias.shape == [N,]
     # allocate output
     dx = (
-        torch.empty_like(x)
+        paddle.empty_like(x)
         if x_dtype is None
-        else torch.empty(M, N, dtype=x_dtype, device=x.device)
+        else paddle.empty([M, N], dtype=x_dtype)
     )
-    dresidual_in = torch.empty_like(x) if has_residual and dx.dtype != x.dtype else None
-    y = torch.empty(M, N, dtype=dy.dtype, device=dy.device) if recompute_output else None
+    dresidual_in = paddle.empty_like(x) if has_residual and dx.dtype != x.dtype else None
+    y = paddle.empty([M, N], dtype=dy.dtype) if recompute_output else None
 
     # Less than 64KB per feature: enqueue fused kernel
     MAX_FUSED_SIZE = 65536 // x.element_size()
     BLOCK_N = min(MAX_FUSED_SIZE, triton.next_power_of_2(N))
     if N > BLOCK_N:
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
-    sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
-    _dw = torch.empty((sm_count, N), dtype=torch.float32, device=weight.device)
+    sm_count = paddle.device.cuda.get_device_properties().multi_processor_count
+    _dw = paddle.empty((sm_count, N), dtype=paddle.float32)
     _db = (
-        torch.empty((sm_count, N), dtype=torch.float32, device=bias.device)
+        paddle.empty((sm_count, N), dtype=paddle.float32)
         if bias is not None
         else None
     )
     rows_per_program = math.ceil(M / sm_count)
     grid = (sm_count,)
-    with torch.cuda.device(x.device.index):
-        _layer_norm_bwd_kernel[grid](
-            x,
-            weight,
-            bias,
-            y,
-            dy,
-            dx,
-            _dw,
-            _db,
-            dresidual,
-            dresidual_in,
-            mean,
-            rstd,
-            x.stride(0),
-            0 if not recompute_output else y.stride(0),
-            dy.stride(0),
-            dx.stride(0),
-            dresidual.stride(0) if dresidual is not None else 0,
-            dresidual_in.stride(0) if dresidual_in is not None else 0,
-            M,
-            N,
-            eps,
-            rows_per_program,
-            is_rms_norm,
-            BLOCK_N,
-            dresidual is not None,
-            dresidual_in is not None,
-            bias is not None,
-        )
-    dw = _dw.sum(0).to(weight.dtype)
-    db = _db.sum(0).to(bias.dtype) if bias is not None else None
+    _layer_norm_bwd_kernel[grid](
+        x,
+        weight,
+        bias,
+        y,
+        dy,
+        dx,
+        _dw,
+        _db,
+        dresidual,
+        dresidual_in,
+        mean,
+        rstd,
+        x.strides[0],
+        0 if not recompute_output else y.strides[0],
+        dy.strides[0],
+        dx.strides[0],
+        dresidual.strides[0] if dresidual is not None else 0,
+        dresidual_in.strides[0] if dresidual_in is not None else 0,
+        M,
+        N,
+        eps,
+        rows_per_program,
+        is_rms_norm,
+        BLOCK_N,
+        dresidual is not None,
+        dresidual_in is not None,
+        bias is not None,
+    )
+    dw = _dw.sum(0).cast(weight.dtype)
+    db = _db.sum(0).cast(bias.dtype) if bias is not None else None
     # Don't need to compute dresidual_in separately in this case
     if has_residual and dx.dtype == x.dtype:
         dresidual_in = dx
     return (dx, dw, db, dresidual_in) if not recompute_output else (dx, dw, db, dresidual_in, y)
 
 
-class LayerNormFn(torch.autograd.Function):
+class LayerNormFn(PyLayer):
     @staticmethod
     def forward(
         ctx,
@@ -392,13 +392,13 @@ class LayerNormFn(torch.autograd.Function):
     ):
         x_shape_og = x.shape
         # reshape input data into 2D tensor
-        x = x.reshape(-1, x.shape[-1])
-        if x.stride(-1) != 1:
+        x = x.reshape([-1, x.shape[-1]])
+        if x.strides[-1] != 1:
             x = x.contiguous()
         if residual is not None:
             assert residual.shape == x_shape_og
-            residual = residual.reshape(-1, residual.shape[-1])
-            if residual.stride(-1) != 1:
+            residual = residual.reshape([-1, residual.shape[-1]])
+            if residual.strides[-1] != 1:
                 residual = residual.contiguous()
         weight = weight.contiguous()
         if bias is not None:
@@ -406,7 +406,7 @@ class LayerNormFn(torch.autograd.Function):
         residual_dtype = (
             residual.dtype
             if residual is not None
-            else (torch.float32 if residual_in_fp32 else None)
+            else (paddle.float32 if residual_in_fp32 else None)
         )
         y, mean, rstd, residual_out = _layer_norm_fwd(
             x, weight, bias, eps, residual, residual_dtype=residual_dtype, is_rms_norm=is_rms_norm
@@ -424,14 +424,14 @@ class LayerNormFn(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dy, *args):
         x, weight, bias, mean, rstd = ctx.saved_tensors
-        dy = dy.reshape(-1, dy.shape[-1])
-        if dy.stride(-1) != 1:
+        dy = dy.reshape([-1, dy.shape[-1]])
+        if dy.strides[-1] != 1:
             dy = dy.contiguous()
         assert dy.shape == x.shape
         if ctx.prenorm:
             dresidual = args[0]
-            dresidual = dresidual.reshape(-1, dresidual.shape[-1])
-            if dresidual.stride(-1) != 1:
+            dresidual = dresidual.reshape([-1, dresidual.shape[-1]])
+            if dresidual.strides[-1] != 1:
                 dresidual = dresidual.contiguous()
             assert dresidual.shape == x.shape
         else:
@@ -449,16 +449,14 @@ class LayerNormFn(torch.autograd.Function):
             ctx.is_rms_norm,
             x_dtype=ctx.x_dtype,
         )
-        return (
-            dx.reshape(ctx.x_shape_og),
-            dw,
-            db,
-            dresidual_in.reshape(ctx.x_shape_og) if ctx.has_residual else None,
-            None,
-            None,
-            None,
-            None,
-        )
+        if ctx.has_residual:
+            return (
+                dx.reshape(ctx.x_shape_og),
+                dw,
+                db,
+                dresidual_in.reshape(ctx.x_shape_og)
+            )
+        return (dx.reshape(ctx.x_shape_og), dw, db)
 
 
 def layer_norm_fn(
@@ -478,17 +476,19 @@ def rms_norm_fn(x, weight, bias, residual=None, prenorm=False, residual_in_fp32=
     return LayerNormFn.apply(x, weight, bias, residual, eps, prenorm, residual_in_fp32, True)
 
 
-class RMSNorm(torch.nn.Module):
-    def __init__(self, hidden_size, eps=1e-5, device=None, dtype=None):
-        factory_kwargs = {"device": device, "dtype": dtype}
+class RMSNorm(nn.Layer):
+    def __init__(self, hidden_size, eps=1e-5):
         super().__init__()
         self.eps = eps
-        self.weight = torch.nn.Parameter(torch.empty(hidden_size, **factory_kwargs))
-        self.register_parameter("bias", None)
-        self.reset_parameters()
+        self.weight = self.create_parameter(
+            [hidden_size,],
+            default_initializer=nn.initializer.Constant(1.0),
+        )
+        self.bias = None
 
     def reset_parameters(self):
-        torch.nn.init.ones_(self.weight)
+        with paddle.no_grad():
+            self.weight.set_value(paddle.ones_like(self.weight))
 
     def forward(self, x, residual=None, prenorm=False, residual_in_fp32=False):
         return rms_norm_fn(
@@ -502,9 +502,8 @@ class RMSNorm(torch.nn.Module):
         )
 
 
-class LayerNormLinearFn(torch.autograd.Function):
+class LayerNormLinearFn(PyLayer):
     @staticmethod
-    @custom_fwd
     def forward(
         ctx,
         x,
@@ -520,13 +519,13 @@ class LayerNormLinearFn(torch.autograd.Function):
     ):
         x_shape_og = x.shape
         # reshape input data into 2D tensor
-        x = x.reshape(-1, x.shape[-1])
-        if x.stride(-1) != 1:
+        x = x.reshape([-1, x.shape[-1]])
+        if x.strides[-1] != 1:
             x = x.contiguous()
         if residual is not None:
             assert residual.shape == x_shape_og
-            residual = residual.reshape(-1, residual.shape[-1])
-            if residual.stride(-1) != 1:
+            residual = residual.reshape([-1, residual.shape[-1]])
+            if residual.strides[-1] != 1:
                 residual = residual.contiguous()
         norm_weight = norm_weight.contiguous()
         if norm_bias is not None:
@@ -534,23 +533,26 @@ class LayerNormLinearFn(torch.autograd.Function):
         residual_dtype = (
             residual.dtype
             if residual is not None
-            else (torch.float32 if residual_in_fp32 else None)
+            else (paddle.float32 if residual_in_fp32 else None)
         )
+        amp_dtype = amp_global_state().amp_dtype
+        is_autocast_enabled = amp_dtype != "float32"
         y, mean, rstd, residual_out = _layer_norm_fwd(
             x,
             norm_weight,
             norm_bias,
             eps,
             residual,
-            out_dtype=None if not torch.is_autocast_enabled() else torch.get_autocast_gpu_dtype(),
+            out_dtype=None if is_autocast_enabled else amp_dtype,
             residual_dtype=residual_dtype,
             is_rms_norm=is_rms_norm,
         )
+
         y = y.reshape(x_shape_og)
-        dtype = torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else y.dtype
-        linear_weight = linear_weight.to(dtype)
-        linear_bias = linear_bias.to(dtype) if linear_bias is not None else None
-        out = F.linear(y.to(linear_weight.dtype), linear_weight, linear_bias)
+        dtype = amp_dtype if is_autocast_enabled else y.dtype
+        linear_weight = linear_weight.cast(dtype)
+        linear_bias = linear_bias.cast(dtype) if linear_bias is not None else None
+        out = F.linear(y.cast(linear_weight.dtype), linear_weight, linear_bias)
         # We don't store y, will be recomputed in the backward pass to save memory
         ctx.save_for_backward(residual_out, norm_weight, norm_bias, linear_weight, mean, rstd)
         ctx.x_shape_og = x_shape_og
@@ -563,19 +565,18 @@ class LayerNormLinearFn(torch.autograd.Function):
         return out if not prenorm else (out, residual_out.reshape(x_shape_og))
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, dout, *args):
         x, norm_weight, norm_bias, linear_weight, mean, rstd = ctx.saved_tensors
-        dout = dout.reshape(-1, dout.shape[-1])
+        dout = dout.reshape([-1, dout.shape[-1]])
         dy = F.linear(dout, linear_weight.t())
         dlinear_bias = None if ctx.linear_bias_is_none else dout.sum(0)
-        if dy.stride(-1) != 1:
+        if dy.strides[-1] != 1:
             dy = dy.contiguous()
         assert dy.shape == x.shape
         if ctx.prenorm:
             dresidual = args[0]
-            dresidual = dresidual.reshape(-1, dresidual.shape[-1])
-            if dresidual.stride(-1) != 1:
+            dresidual = dresidual.reshape([-1, dresidual.shape[-1]])
+            if dresidual.strides[-1] != 1:
                 dresidual = dresidual.contiguous()
             assert dresidual.shape == x.shape
         else:
@@ -594,20 +595,23 @@ class LayerNormLinearFn(torch.autograd.Function):
             x_dtype=ctx.x_dtype,
             recompute_output=True,
         )
-        dlinear_weight = torch.einsum("bo,bi->oi", dout, y)
+        dlinear_weight = paddle.einsum("bo,bi->oi", dout, y)
+        if ctx.has_residual:
+            return (
+                dx.reshape(ctx.x_shape_og),
+                dnorm_weight,
+                dnorm_bias,
+                dlinear_weight,
+                dlinear_bias,
+                dresidual_in.reshape(ctx.x_shape_og)
+            )
         return (
             dx.reshape(ctx.x_shape_og),
             dnorm_weight,
             dnorm_bias,
             dlinear_weight,
             dlinear_bias,
-            dresidual_in.reshape(ctx.x_shape_og) if ctx.has_residual else None,
-            None,
-            None,
-            None,
-            None,
         )
-
 
 def layer_norm_linear_fn(
     x,
