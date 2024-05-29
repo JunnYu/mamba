@@ -2,7 +2,10 @@
  * Copyright (c) 2024, Tri Dao.
  ******************************************************************************/
 
+#if defined(CUDA_BFLOAT16_AVALIABLE)
 #include <cuda_bf16.h>
+#endif
+
 #include <cuda_fp16.h>
 #include <paddle/extension.h>
 
@@ -590,20 +593,23 @@ void causal_conv1d_channellast_bwd_cuda(ConvParamsBwd &params, cudaStream_t stre
 
 template void causal_conv1d_bwd_cuda<float, float>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_bwd_cuda<half, float>(ConvParamsBwd &params, cudaStream_t stream);
-template void causal_conv1d_bwd_cuda<__nv_bfloat16, float>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_bwd_cuda<float, half>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_bwd_cuda<half, half>(ConvParamsBwd &params, cudaStream_t stream);
+
+template void causal_conv1d_channellast_bwd_cuda<float, float>(ConvParamsBwd &params, cudaStream_t stream);
+template void causal_conv1d_channellast_bwd_cuda<half, float>(ConvParamsBwd &params, cudaStream_t stream);
+template void causal_conv1d_channellast_bwd_cuda<float, half>(ConvParamsBwd &params, cudaStream_t stream);
+template void causal_conv1d_channellast_bwd_cuda<half, half>(ConvParamsBwd &params, cudaStream_t stream);
+
+#ifdef CUDA_BFLOAT16_AVALIABLE
+template void causal_conv1d_bwd_cuda<__nv_bfloat16, float>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_bwd_cuda<__nv_bfloat16, half>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_bwd_cuda<float, __nv_bfloat16>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_bwd_cuda<half, __nv_bfloat16>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_bwd_cuda<__nv_bfloat16, __nv_bfloat16>(ConvParamsBwd &params, cudaStream_t stream);
-
-template void causal_conv1d_channellast_bwd_cuda<float, float>(ConvParamsBwd &params, cudaStream_t stream);
-template void causal_conv1d_channellast_bwd_cuda<half, float>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_channellast_bwd_cuda<__nv_bfloat16, float>(ConvParamsBwd &params, cudaStream_t stream);
-template void causal_conv1d_channellast_bwd_cuda<float, half>(ConvParamsBwd &params, cudaStream_t stream);
-template void causal_conv1d_channellast_bwd_cuda<half, half>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_channellast_bwd_cuda<__nv_bfloat16, half>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_channellast_bwd_cuda<float, __nv_bfloat16>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_channellast_bwd_cuda<half, __nv_bfloat16>(ConvParamsBwd &params, cudaStream_t stream);
 template void causal_conv1d_channellast_bwd_cuda<__nv_bfloat16, __nv_bfloat16>(ConvParamsBwd &params, cudaStream_t stream);
+#endif

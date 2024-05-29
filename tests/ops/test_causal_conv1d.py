@@ -131,7 +131,6 @@ def test_causal_conv1d(dim, seqlen, width, has_bias, silu_activation, itype, cha
 @pytest.mark.parametrize("dim", [2048, 2048 + 16, 4096])
 # @pytest.mark.parametrize("dim", [2048])
 def test_causal_conv1d_update(dim, width, has_bias, silu_activation, itype):
-    device = "cuda"
     rtol, atol = (3e-4, 1e-3) if itype == paddle.float32 else (3e-3, 5e-3)
     if itype == paddle.bfloat16:
         rtol, atol = 1e-2, 5e-2

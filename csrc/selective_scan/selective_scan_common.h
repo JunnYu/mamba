@@ -4,7 +4,9 @@
 
 #pragma once
 
+#if defined(CUDA_BFLOAT16_AVALIABLE)
 #include <cuda_bf16.h>
+#endif
 #include <cuda_fp16.h>
 // #include <c10/util/complex.h>  // For scalar_value_type
 

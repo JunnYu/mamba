@@ -2,7 +2,9 @@
  * Copyright (c) 2023, Tri Dao.
  ******************************************************************************/
 
+#if defined(CUDA_BFLOAT16_AVALIABLE)
 #include <cuda_bf16.h>
+#endif
 #include <cuda_fp16.h>
 #include <paddle/extension.h>
 
@@ -86,10 +88,14 @@ void causal_conv1d_update_cuda(ConvParamsBase &params, cudaStream_t stream) {
 
 template void causal_conv1d_update_cuda<float, float>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_update_cuda<__half, float>(ConvParamsBase &params, cudaStream_t stream);
-template void causal_conv1d_update_cuda<__nv_bfloat16, float>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_update_cuda<float, __half>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_update_cuda<__half, __half>(ConvParamsBase &params, cudaStream_t stream);
+
+
+#ifdef CUDA_BFLOAT16_AVALIABLE
+template void causal_conv1d_update_cuda<__nv_bfloat16, float>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_update_cuda<__nv_bfloat16, __half>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_update_cuda<float, __nv_bfloat16>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_update_cuda<__half, __nv_bfloat16>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_update_cuda<__nv_bfloat16, __nv_bfloat16>(ConvParamsBase &params, cudaStream_t stream);
+#endif

@@ -1,7 +1,9 @@
 /******************************************************************************
  * Copyright (c) 2023, Tri Dao.
  ******************************************************************************/
+#if defined(CUDA_BFLOAT16_AVALIABLE)
 #include <cuda_bf16.h>
+#endif
 #include <cuda_fp16.h>
 #include <iostream>
 
@@ -12,6 +14,7 @@
 
 #define CHECK_SHAPE(x, ...) PD_CHECK(x.dims() == common::make_ddim({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
 
+#ifdef CUDA_BFLOAT16_AVALIABLE
 #define DISPATCH_ITYPE_FLOAT_AND_HALF_AND_BF16(ITYPE, NAME, ...)                     \
     if (ITYPE == paddle::DataType::FLOAT16) {                                        \
         using input_t = half;                                                        \
@@ -25,20 +28,18 @@
     } else {                                                                         \
         PADDLE_THROW(#NAME, " not implemented for input type '", ITYPE, "'");        \
     }
-
-#define DISPATCH_WTYPE_FLOAT_AND_HALF_AND_BF16(WTYPE, NAME, ...)                     \
-    if (WTYPE == paddle::DataType::FLOAT16) {                                        \
-        using weight_t = half;                                                       \
+#else
+#define DISPATCH_ITYPE_FLOAT_AND_HALF_AND_BF16(ITYPE, NAME, ...)                     \
+    if (ITYPE == paddle::DataType::FLOAT16) {                                        \
+        using input_t = half;                                                        \
         __VA_ARGS__();                                                               \
-    } else if (WTYPE == paddle::DataType::BFLOAT16) {                                \
-        using weight_t = __nv_bfloat16;                                              \
-        __VA_ARGS__();                                                               \
-    } else if (WTYPE == paddle::DataType::FLOAT32)  {                                \
-        using weight_t = float;                                                      \
+    } else if (ITYPE == paddle::DataType::FLOAT32)  {                                \
+        using input_t = float;                                                       \
         __VA_ARGS__();                                                               \
     } else {                                                                         \
-        PADDLE_THROW(#NAME, " not implemented for weight type '", WTYPE, "'");       \
+        PADDLE_THROW(#NAME, " not implemented for input type '", ITYPE, "'");        \
     }
+#endif
 
 #define DISPATCH_WTYPE_FLOAT_AND_COMPLEX(WTYPE, NAME, ...)                           \
     if (WTYPE == paddle::DataType::FLOAT32) {                                        \

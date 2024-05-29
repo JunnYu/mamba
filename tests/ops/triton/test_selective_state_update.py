@@ -17,7 +17,6 @@ from mamba_ssm_paddle.ops.triton.selective_state_update import selective_state_u
 @pytest.mark.parametrize("dim", [2048, 2048 + 16, 4096])
 # @pytest.mark.parametrize("dim", [2048])
 def test_selective_state_update(dim, dstate, has_z, itype):
-    device = "cuda"
     rtol, atol = (3e-4, 1e-3) if itype == paddle.float32 else (5e-3, 1e-2)
     if itype == paddle.bfloat16:
         rtol, atol = 1e-2, 5e-2

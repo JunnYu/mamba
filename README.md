@@ -14,10 +14,10 @@ with an efficient hardware-aware design and implementation in the spirit of [Fla
 ## Installation
 
 ```bash
-python setup.py install
+pip install einops
+python setup_causal_conv1d.py install
+python setup_selective_scan.py install
 ```
-
-If `pip` complains about Paddle versions, try passing `--no-build-isolation` to `pip`.
 
 Other requirements:
 - Linux

@@ -35,6 +35,16 @@ for site_packages_path in getsitepackages():
     )
     
 
+
+import paddle
+prop = paddle.device.cuda.get_device_properties()
+cc = prop.major * 10 + prop.minor
+cc_list = [cc, ]
+cc_flag = []
+for arch in cc_list:
+    cc_flag.append("-gencode")
+    cc_flag.append(f"arch=compute_{arch},code=sm_{arch}")
+
 sources = [
     "csrc/causal_conv1d/causal_conv1d.cpp",
     "csrc/causal_conv1d/causal_conv1d_fwd.cu",
@@ -42,12 +52,9 @@ sources = [
     "csrc/causal_conv1d/causal_conv1d_update.cu",
 ]
 
-arch_list = ["80"]
-cc_flag = []
-for arch in arch_list:
-    cc_flag.append("-gencode")
-    cc_flag.append(f"arch=compute_{arch},code=sm_{arch}")
-
+if cc >= 75:
+    cc_flag.append("-DCUDA_BFLOAT16_AVALIABLE")
+    
 extra_compile_args = {
     "cxx": ["-O3"],
     "nvcc": append_nvcc_threads(

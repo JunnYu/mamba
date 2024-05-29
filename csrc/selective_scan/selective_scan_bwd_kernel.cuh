@@ -6,7 +6,9 @@
 
 #include <paddle/phi/backends/gpu/gpu_primitives.h>
 
+#if defined(CUDA_BFLOAT16_AVALIABLE)
 #include <cuda_bf16.h>
+#endif
 #include <cuda_fp16.h>
 
 #include <cub/block/block_load.cuh>

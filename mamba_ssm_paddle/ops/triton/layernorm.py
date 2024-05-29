@@ -18,6 +18,13 @@ import triton.language as tl
 
 from paddle.amp.auto_cast import amp_global_state
 
+def backward_return_wrapper(*args):
+    result = []
+    for each in args:
+        if each is not None and isinstance(each, paddle.Tensor):
+            result.append(each)
+    return tuple(result)
+
 def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
     dtype = x.dtype
     if upcast:
@@ -131,12 +138,12 @@ def _layer_norm_fwd(
     assert x.strides[-1] == 1
     if residual is not None:
         assert residual.strides[-1] == 1
-        assert residual.shape == (M, N)
-    assert weight.shape == (N,)
+        assert residual.shape == [M, N]
+    assert weight.shape == [N,]
     assert weight.strides[-1] == 1
     if bias is not None:
         assert bias.strides[-1] == 1
-        assert bias.shape == (N,)
+        assert bias.shape == [N,]
     # allocate output
     y = paddle.empty_like(x, dtype=x.dtype if out_dtype is None else out_dtype)
     assert y.strides[-1] == 1
@@ -423,7 +430,7 @@ class LayerNormFn(PyLayer):
 
     @staticmethod
     def backward(ctx, dy, *args):
-        x, weight, bias, mean, rstd = ctx.saved_tensors
+        x, weight, bias, mean, rstd = ctx.saved_tensor()
         dy = dy.reshape([-1, dy.shape[-1]])
         if dy.strides[-1] != 1:
             dy = dy.contiguous()
@@ -450,13 +457,13 @@ class LayerNormFn(PyLayer):
             x_dtype=ctx.x_dtype,
         )
         if ctx.has_residual:
-            return (
+            return backward_return_wrapper(
                 dx.reshape(ctx.x_shape_og),
                 dw,
                 db,
                 dresidual_in.reshape(ctx.x_shape_og)
             )
-        return (dx.reshape(ctx.x_shape_og), dw, db)
+        return backward_return_wrapper(dx.reshape(ctx.x_shape_og), dw, db)
 
 
 def layer_norm_fn(
@@ -468,18 +475,19 @@ def layer_norm_fn(
     prenorm=False,
     residual_in_fp32=False,
     is_rms_norm=False,
+    epsilon=None,
 ):
-    return LayerNormFn.apply(x, weight, bias, residual, eps, prenorm, residual_in_fp32, is_rms_norm)
+    return LayerNormFn.apply(x, weight, bias, residual, epsilon or eps, prenorm, residual_in_fp32, is_rms_norm)
 
 
-def rms_norm_fn(x, weight, bias, residual=None, prenorm=False, residual_in_fp32=False, eps=1e-6):
-    return LayerNormFn.apply(x, weight, bias, residual, eps, prenorm, residual_in_fp32, True)
+def rms_norm_fn(x, weight, bias, residual=None, prenorm=False, residual_in_fp32=False, eps=1e-6, epsilon=None):
+    return LayerNormFn.apply(x, weight, bias, residual, epsilon or eps, prenorm, residual_in_fp32, True)
 
 
 class RMSNorm(nn.Layer):
-    def __init__(self, hidden_size, eps=1e-5):
+    def __init__(self, hidden_size, eps=1e-5, epsilon=None):
         super().__init__()
-        self.eps = eps
+        self.eps = self._epsilon = epsilon or eps
         self.weight = self.create_parameter(
             [hidden_size,],
             default_initializer=nn.initializer.Constant(1.0),
@@ -566,7 +574,7 @@ class LayerNormLinearFn(PyLayer):
 
     @staticmethod
     def backward(ctx, dout, *args):
-        x, norm_weight, norm_bias, linear_weight, mean, rstd = ctx.saved_tensors
+        x, norm_weight, norm_bias, linear_weight, mean, rstd = ctx.saved_tensor()
         dout = dout.reshape([-1, dout.shape[-1]])
         dy = F.linear(dout, linear_weight.t())
         dlinear_bias = None if ctx.linear_bias_is_none else dout.sum(0)
@@ -597,7 +605,7 @@ class LayerNormLinearFn(PyLayer):
         )
         dlinear_weight = paddle.einsum("bo,bi->oi", dout, y)
         if ctx.has_residual:
-            return (
+            return backward_return_wrapper(
                 dx.reshape(ctx.x_shape_og),
                 dnorm_weight,
                 dnorm_bias,
@@ -605,7 +613,7 @@ class LayerNormLinearFn(PyLayer):
                 dlinear_bias,
                 dresidual_in.reshape(ctx.x_shape_og)
             )
-        return (
+        return backward_return_wrapper(
             dx.reshape(ctx.x_shape_og),
             dnorm_weight,
             dnorm_bias,
