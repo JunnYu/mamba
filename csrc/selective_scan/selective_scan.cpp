@@ -14,7 +14,7 @@
 
 #define CHECK_SHAPE(x, ...) PD_CHECK(x.dims() == common::make_ddim({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
 
-#ifdef CUDA_BFLOAT16_AVALIABLE
+#if defined(CUDA_BFLOAT16_AVALIABLE)
 #define DISPATCH_ITYPE_FLOAT_AND_HALF_AND_BF16(ITYPE, NAME, ...)                     \
     if (ITYPE == paddle::DataType::FLOAT16) {                                        \
         using input_t = half;                                                        \

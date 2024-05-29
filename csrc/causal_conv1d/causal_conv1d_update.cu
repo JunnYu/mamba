@@ -92,7 +92,7 @@ template void causal_conv1d_update_cuda<float, __half>(ConvParamsBase &params, c
 template void causal_conv1d_update_cuda<__half, __half>(ConvParamsBase &params, cudaStream_t stream);
 
 
-#ifdef CUDA_BFLOAT16_AVALIABLE
+#if defined(CUDA_BFLOAT16_AVALIABLE)
 template void causal_conv1d_update_cuda<__nv_bfloat16, float>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_update_cuda<__nv_bfloat16, __half>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_update_cuda<float, __nv_bfloat16>(ConvParamsBase &params, cudaStream_t stream);
