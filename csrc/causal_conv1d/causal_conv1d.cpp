@@ -4,68 +4,20 @@
 
 #include <iostream>
 #include <cuda_fp16.h>
+
 #if defined(CUDA_BFLOAT16_AVALIABLE)
 #include <cuda_bf16.h>
+#include <dispatch_bf16.h>
+#else
+#include <dispatch.h>
 #endif
+
 #include <paddle/extension.h>
 #include <vector>
 
 #include "causal_conv1d.h"
 
 #define CHECK_SHAPE(x, ...) PD_CHECK(x.dims() == common::make_ddim({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
-
-#if defined(CUDA_BFLOAT16_AVALIABLE)
-#define DISPATCH_ITYPE_FLOAT_AND_HALF_AND_BF16(ITYPE, NAME, ...)                     \
-    if (ITYPE == paddle::DataType::FLOAT16) {                                        \
-        using input_t = half;                                                        \
-        __VA_ARGS__();                                                               \
-    } else if (ITYPE == paddle::DataType::BFLOAT16) {                                \
-        using input_t = __nv_bfloat16;                                               \
-        __VA_ARGS__();                                                               \
-    } else if (ITYPE == paddle::DataType::FLOAT32)  {                                \
-        using input_t = float;                                                       \
-        __VA_ARGS__();                                                               \
-    } else {                                                                         \
-        PADDLE_THROW(#NAME, " not implemented for input type '", ITYPE, "'");        \
-    }
-
-#define DISPATCH_WTYPE_FLOAT_AND_HALF_AND_BF16(WTYPE, NAME, ...)                     \
-    if (WTYPE == paddle::DataType::FLOAT16) {                                        \
-        using weight_t = half;                                                       \
-        __VA_ARGS__();                                                               \
-    } else if (WTYPE == paddle::DataType::BFLOAT16) {                                \
-        using weight_t = __nv_bfloat16;                                              \
-        __VA_ARGS__();                                                               \
-    } else if (WTYPE == paddle::DataType::FLOAT32)  {                                \
-        using weight_t = float;                                                      \
-        __VA_ARGS__();                                                               \
-    } else {                                                                         \
-        PADDLE_THROW(#NAME, " not implemented for weight type '", WTYPE, "'");       \
-    }
-#else
-#define DISPATCH_ITYPE_FLOAT_AND_HALF_AND_BF16(ITYPE, NAME, ...)                     \
-    if (ITYPE == paddle::DataType::FLOAT16) {                                        \
-        using input_t = half;                                                        \
-        __VA_ARGS__();                                                               \
-    } else if (ITYPE == paddle::DataType::FLOAT32)  {                                \
-        using input_t = float;                                                       \
-        __VA_ARGS__();                                                               \
-    } else {                                                                         \
-        PADDLE_THROW(#NAME, " not implemented for input type '", ITYPE, "'");        \
-    }
-
-#define DISPATCH_WTYPE_FLOAT_AND_HALF_AND_BF16(WTYPE, NAME, ...)                     \
-    if (WTYPE == paddle::DataType::FLOAT16) {                                        \
-        using weight_t = half;                                                       \
-        __VA_ARGS__();                                                               \
-    } else if (WTYPE == paddle::DataType::FLOAT32)  {                                \
-        using weight_t = float;                                                      \
-        __VA_ARGS__();                                                               \
-    } else {                                                                         \
-        PADDLE_THROW(#NAME, " not implemented for weight type '", WTYPE, "'");       \
-    }
-#endif
-
 
 template<typename input_t, typename weight_t>
 void causal_conv1d_fwd_cuda(ConvParamsBase &params, cudaStream_t stream);
