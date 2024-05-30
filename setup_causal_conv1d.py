@@ -46,15 +46,19 @@ for arch in cc_list:
     cc_flag.append(f"arch=compute_{arch},code=sm_{arch}")
 
 sources = [
-    "csrc/causal_conv1d/causal_conv1d.cpp",
     "csrc/causal_conv1d/causal_conv1d_fwd.cu",
     "csrc/causal_conv1d/causal_conv1d_bwd.cu",
     "csrc/causal_conv1d/causal_conv1d_update.cu",
 ]
 
 if cc >= 75:
-    cc_flag.append("-DCUDA_BFLOAT16_AVALIABLE")
-    
+    cc_flag.append("-DCUDA_BFLOAT16_AVAILABLE")
+    sources.append("csrc/causal_conv1d/causal_conv1d_bf16.cpp")
+else:
+    sources.append("csrc/causal_conv1d/causal_conv1d.cpp")
+
+print("sources", sources)
+
 extra_compile_args = {
     "cxx": ["-O3"],
     "nvcc": append_nvcc_threads(

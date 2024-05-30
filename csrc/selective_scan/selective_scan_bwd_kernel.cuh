@@ -6,7 +6,7 @@
 
 #include <paddle/phi/backends/gpu/gpu_primitives.h>
 
-#if defined(CUDA_BFLOAT16_AVALIABLE)
+#if defined(CUDA_BFLOAT16_AVAILABLE)
 #include <cuda_bf16.h>
 #endif
 #include <cuda_fp16.h>

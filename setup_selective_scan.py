@@ -44,7 +44,6 @@ for arch in cc_list:
     cc_flag.append(f"arch=compute_{arch},code=sm_{arch}")
 
 sources = [
-    "csrc/selective_scan/selective_scan.cpp",
     # fp32
     "csrc/selective_scan/selective_scan_fwd_fp32.cu",
     "csrc/selective_scan/selective_scan_bwd_fp32.cu",
@@ -53,10 +52,14 @@ sources = [
     "csrc/selective_scan/selective_scan_bwd_fp16.cu",
 ]
 if cc >= 75:
-    cc_flag.append("-DCUDA_BFLOAT16_AVALIABLE")
+    cc_flag.append("-DCUDA_BFLOAT16_AVAILABLE")
+    sources.append("csrc/selective_scan/selective_scan_bf16.cpp")
     sources.append("csrc/selective_scan/selective_scan_fwd_bf16.cu")
     sources.append("csrc/selective_scan/selective_scan_bwd_bf16.cu")
+else:
+    sources.append("csrc/selective_scan/selective_scan.cpp")
 
+print("sources", sources)
 extra_compile_args = {
     "cxx": ["-O3", "-std=c++17"],
     "nvcc": append_nvcc_threads(

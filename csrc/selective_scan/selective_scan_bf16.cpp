@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
 
 #include <paddle/extension.h>
 #include <vector>
@@ -15,6 +16,9 @@
 #define DISPATCH_ITYPE_FLOAT_AND_HALF_AND_BF16(ITYPE, NAME, ...)                     \
     if (ITYPE == paddle::DataType::FLOAT16) {                                        \
         using input_t = half;                                                        \
+        __VA_ARGS__();                                                               \
+    } else if (ITYPE == paddle::DataType::BFLOAT16) {                                \
+        using input_t = __nv_bfloat16;                                               \
         __VA_ARGS__();                                                               \
     } else if (ITYPE == paddle::DataType::FLOAT32)  {                                \
         using input_t = float;                                                       \

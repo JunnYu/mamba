@@ -2,7 +2,7 @@
  * Copyright (c) 2024, Tri Dao.
  ******************************************************************************/
 
-#if defined(CUDA_BFLOAT16_AVALIABLE)
+#if defined(CUDA_BFLOAT16_AVAILABLE)
 #include <cuda_bf16.h>
 #endif
 #include <cuda_fp16.h>
@@ -374,7 +374,7 @@ template void causal_conv1d_channellast_fwd_cuda<float, half>(ConvParamsBase &pa
 template void causal_conv1d_channellast_fwd_cuda<half, half>(ConvParamsBase &params, cudaStream_t stream);
 
 
-#if defined(CUDA_BFLOAT16_AVALIABLE)
+#if defined(CUDA_BFLOAT16_AVAILABLE)
 template void causal_conv1d_fwd_cuda<__nv_bfloat16, float>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_fwd_cuda<__nv_bfloat16, half>(ConvParamsBase &params, cudaStream_t stream);
 template void causal_conv1d_fwd_cuda<float, __nv_bfloat16>(ConvParamsBase &params, cudaStream_t stream);
