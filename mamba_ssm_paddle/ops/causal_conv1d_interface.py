@@ -11,13 +11,29 @@ except ImportError:
     causal_conv1d_cuda = None
     print("causal_conv1d_cuda_paddle is not found. Please install it.")
 
-
-def backward_return_wrapper(*args):
+def backward_return_wrapper(*args, needs_input_grad=[]):
     result = []
-    for each in args:
-        if each is not None and isinstance(each, paddle.Tensor):
+    for each, need_input_grad in zip(args, needs_input_grad):
+        if isinstance(need_input_grad, str) and need_input_grad == "not_tensor":
+            continue
+        if need_input_grad:
             result.append(each)
-    return tuple(result)
+        else:
+            result.append(None)
+    while result and result[-1] is None:
+        result.pop()
+
+    return tuple(result) 
+
+def set_needs_input_grad(ctx, *args):
+    if not hasattr(ctx, "needs_input_grad"):
+        ctx.needs_input_grad = [False] * len(args)
+    for i, arg in enumerate(args):
+        if isinstance(arg, paddle.Tensor):
+            if not arg.stop_gradient:
+                ctx.needs_input_grad[i] = True
+        else:
+            ctx.needs_input_grad[i] = "not_tensor"
 
 class CausalConv1dFn(PyLayer):
     @staticmethod
@@ -32,6 +48,7 @@ class CausalConv1dFn(PyLayer):
         final_states_out=None,
         activation=None,
     ):
+        set_needs_input_grad(ctx, x, weight, bias, seq_idx, initial_states, return_final_states, final_states_out, activation)
         if activation not in [None, "silu", "swish"]:
             raise NotImplementedError("activation must be None, silu, or swish")
         if x.strides[2] != 1 and x.strides[1] != 1:
@@ -127,6 +144,7 @@ class CausalConv1dFn(PyLayer):
             None,
             None,
             None,
+            needs_input_grad=ctx.needs_input_grad,
         )
 
 

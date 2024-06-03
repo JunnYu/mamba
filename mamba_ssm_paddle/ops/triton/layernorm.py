@@ -18,12 +18,29 @@ import triton.language as tl
 
 from paddle.amp.auto_cast import amp_global_state
 
-def backward_return_wrapper(*args):
+def backward_return_wrapper(*args, needs_input_grad=[]):
     result = []
-    for each in args:
-        if each is not None and isinstance(each, paddle.Tensor):
+    for each, need_input_grad in zip(args, needs_input_grad):
+        if isinstance(need_input_grad, str) and need_input_grad == "not_tensor":
+            continue
+        if need_input_grad:
             result.append(each)
-    return tuple(result)
+        else:
+            result.append(None)
+    while result and result[-1] is None:
+        result.pop()
+
+    return tuple(result) 
+
+def set_needs_input_grad(ctx, *args):
+    if not hasattr(ctx, "needs_input_grad"):
+        ctx.needs_input_grad = [False] * len(args)
+    for i, arg in enumerate(args):
+        if isinstance(arg, paddle.Tensor):
+            if not arg.stop_gradient:
+                ctx.needs_input_grad[i] = True
+        else:
+            ctx.needs_input_grad[i] = "not_tensor"
 
 def layer_norm_ref(x, weight, bias, residual=None, eps=1e-6, prenorm=False, upcast=False):
     dtype = x.dtype
@@ -397,6 +414,7 @@ class LayerNormFn(PyLayer):
         residual_in_fp32=False,
         is_rms_norm=False,
     ):
+        set_needs_input_grad(ctx, x, weight, bias, residual, eps, prenorm, residual_in_fp32, is_rms_norm)
         x_shape_og = x.shape
         # reshape input data into 2D tensor
         x = x.reshape([-1, x.shape[-1]])
@@ -461,9 +479,10 @@ class LayerNormFn(PyLayer):
                 dx.reshape(ctx.x_shape_og),
                 dw,
                 db,
-                dresidual_in.reshape(ctx.x_shape_og)
+                dresidual_in.reshape(ctx.x_shape_og),
+                needs_input_grad=ctx.needs_input_grad,
             )
-        return backward_return_wrapper(dx.reshape(ctx.x_shape_og), dw, db)
+        return backward_return_wrapper(dx.reshape(ctx.x_shape_og), dw, db, needs_input_grad=ctx.needs_input_grad)
 
 
 def layer_norm_fn(

@@ -22,17 +22,36 @@ except:
     selective_scan_cuda = None
     print("selective_scan_cuda_paddle is not found. Please install it.")
 
-def backward_return_wrapper(*args):
+def backward_return_wrapper(*args, needs_input_grad=[]):
     result = []
-    for each in args:
-        if each is not None and isinstance(each, paddle.Tensor):
+    for each, need_input_grad in zip(args, needs_input_grad):
+        if isinstance(need_input_grad, str) and need_input_grad == "not_tensor":
+            continue
+        if need_input_grad:
             result.append(each)
-    return tuple(result)
+        else:
+            result.append(None)
+    while result and result[-1] is None:
+        result.pop()
+
+    return tuple(result) 
+
+def set_needs_input_grad(ctx, *args):
+    if not hasattr(ctx, "needs_input_grad"):
+        ctx.needs_input_grad = [False] * len(args)
+    for i, arg in enumerate(args):
+        if isinstance(arg, paddle.Tensor):
+            if not arg.stop_gradient:
+                ctx.needs_input_grad[i] = True
+        else:
+            ctx.needs_input_grad[i] = "not_tensor"
+
 
 class SelectiveScanFn(PyLayer):
     @staticmethod
     def forward(ctx, u, delta, A, B, C, D=None, z=None, delta_bias=None, delta_softplus=False,
                 return_last_state=False):
+        set_needs_input_grad(ctx, u, delta, A, B, C, D, z, delta_bias, delta_softplus, return_last_state)
         if u.strides[-1] != 1:
             u = u.contiguous()
         if delta.strides[-1] != 1:
@@ -93,6 +112,7 @@ class SelectiveScanFn(PyLayer):
             dD if D is not None else None,
             dz,
             ddelta_bias if delta_bias is not None else None,
+            needs_input_grad = ctx.needs_input_grad,
         )
 
 def selective_scan_fn(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta_softplus=False,
@@ -177,6 +197,10 @@ class MambaInnerFn(PyLayer):
         """
              xz: (batch, dim, seqlen)
         """
+        set_needs_input_grad(ctx, xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
+                out_proj_weight, out_proj_bias,
+                A, B, C, D, delta_bias, B_proj_bias,
+                C_proj_bias, delta_softplus, checkpoint_lvl)
         assert causal_conv1d_cuda is not None, "causal_conv1d_cuda is not available. Please install causal-conv1d."
         assert checkpoint_lvl in [0, 1]
         L = xz.shape[-1]
@@ -317,7 +341,9 @@ class MambaInnerFn(PyLayer):
                 dout_proj_weight, dout_proj_bias,
                 dA, dB, dC, dD,
                 ddelta_bias if delta_bias is not None else None,
-                dB_proj_bias, dC_proj_bias, None)
+                dB_proj_bias, dC_proj_bias, None, 
+                needs_input_grad = ctx.needs_input_grad,
+        )
 
 def mamba_inner_fn(
     xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
