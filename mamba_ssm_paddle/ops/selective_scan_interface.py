@@ -4,6 +4,7 @@ import paddle.nn.functional as F
 
 from einops import rearrange, repeat
 from paddle.autograd import PyLayer
+from paddle.distributed import fleet
 
 try:
     from .causal_conv1d_interface import causal_conv1d_fn
@@ -102,7 +103,29 @@ class SelectiveScanFn(PyLayer):
         dz = rest[0] if ctx.has_z else None
         dB = dB.squeeze(1) if getattr(ctx, "squeeze_B", False) else dB
         dC = dC.squeeze(1) if getattr(ctx, "squeeze_C", False) else dC
-        
+
+        try:
+            hcg = fleet.get_hybrid_communicate_group()
+            mp_group = hcg.get_model_parallel_group()
+            mp_src_rank = hcg.get_model_parallel_group_src_rank()
+            mp_world_size = hcg.get_model_parallel_world_size()
+        except:
+            mp_group = None
+            mp_src_rank = 0
+            mp_world_size = 1
+
+        if mp_world_size > 1:
+            paddle.distributed.broadcast(
+                dB,
+                src=mp_src_rank,
+                group=mp_group,
+            )
+            paddle.distributed.broadcast(
+                dC,
+                src=mp_src_rank,
+                group=mp_group,
+            )
+
         return backward_return_wrapper(
             du,
             ddelta,
