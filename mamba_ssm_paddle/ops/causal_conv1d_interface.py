@@ -158,11 +158,7 @@ def causal_conv1d_fn(
 
     out: (batch, dim, seqlen)
     """
-    # Currently, we only support float32 for weights and biases. Other data types may result in NaN. Please be cautious.
-    if weight.dtype != paddle.float32:
-        weight = weight.cast("float32")
-    if bias is not None and bias.dtype != paddle.float32:
-        bias = bias.cast("float32")
+
     return CausalConv1dFn.apply(
         x,
         weight,

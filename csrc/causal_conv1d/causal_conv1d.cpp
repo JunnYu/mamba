@@ -315,9 +315,10 @@ causal_conv1d_bwd(const paddle::Tensor &x, const paddle::Tensor &weight,
 
     // Otherwise the kernel will be launched from cuda:0 device
     // Cast to char to avoid compiler warning about narrowing
-    paddle::Tensor dweight = paddle::experimental::zeros_like(weight);
+    // make sure dweight and dbias dtype paddle::DataType::FLOAT32
+    paddle::Tensor dweight = paddle::experimental::zeros_like(weight, paddle::DataType::FLOAT32);
     paddle::Tensor dbias;
-    if (bias_.has_value()) { dbias = paddle::experimental::zeros_like(bias_.value()); }
+    if (bias_.has_value()) { dbias = paddle::experimental::zeros_like(bias_.value(), paddle::DataType::FLOAT32); }
 
     ConvParamsBwd params;
     set_conv_params_bwd(params, batch_size, dim, seqlen, width,
