@@ -61,7 +61,20 @@ class CausalConv1dFn(paddle.autograd.PyLayer):
         out = causal_conv1d_cuda.causal_conv1d_fwd(
             x, weight, bias, seq_idx, initial_states, final_states_out, ctx.activation
         )
-        ctx.save_for_backward(x, weight, bias, seq_idx, initial_states)
+        
+        if seq_idx is not None and initial_states is not None:
+            ctx.save_mode = 0
+            ctx.save_for_backward(x, weight, bias, seq_idx, initial_states)
+        elif initial_states is None and seq_idx is not None:
+            ctx.save_mode = 1
+            ctx.save_for_backward(x, weight, bias, seq_idx)
+        elif seq_idx is None and initial_states is not None:
+            ctx.save_mode = 2
+            ctx.save_for_backward(x, weight, bias, initial_states)
+        else:
+            ctx.save_mode = 3
+            ctx.save_for_backward(x, weight, bias)
+
         ctx.return_final_states = return_final_states
         ctx.return_dinitial_states = (
             initial_states is not None and not initial_states.stop_gradient
@@ -71,7 +84,16 @@ class CausalConv1dFn(paddle.autograd.PyLayer):
     @staticmethod
     @custom_bwd
     def backward(ctx, dout, *args):
-        x, weight, bias, seq_idx, initial_states = ctx.saved_tensor()
+        initial_states = seq_idx = None
+        if ctx.save_mode == 0:
+            x, weight, bias, seq_idx, initial_states = ctx.saved_tensor()
+        elif ctx.save_mode == 1:
+            x, weight, bias, seq_idx = ctx.saved_tensor()
+        elif ctx.save_mode == 2:
+            x, weight, bias, initial_states = ctx.saved_tensor()
+        else:
+            x, weight, bias = ctx.saved_tensor()
+
         dfinal_states = args[0] if ctx.return_final_states else None
 
         # if dout.strides[2] != 1 and dout.strides[1] != 1:
@@ -136,6 +158,11 @@ def causal_conv1d_fn(
 
     out: (batch, dim, seqlen)
     """
+    # Currently, we only support float32 for weights and biases. Other data types may result in NaN. Please be cautious.
+    if weight.dtype != paddle.float32:
+        weight = weight.cast("float32")
+    if bias is not None and bias.dtype != paddle.float32:
+        bias = bias.cast("float32")
     return CausalConv1dFn.apply(
         x,
         weight,
