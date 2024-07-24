@@ -360,6 +360,12 @@ def mamba_inner_fn(
         x_proj_weight = x_proj_weight.t().contiguous()
         out_proj_weight = out_proj_weight.t().contiguous()
         delta_proj_weight = delta_proj_weight.t().contiguous()
+        
+    # Currently, we only support float32 for weights and biases. Other data types may result in NaN. Please be cautious.
+    if conv1d_weight.dtype != paddle.float32:
+        conv1d_weight = conv1d_weight.cast("float32")
+    if conv1d_bias is not None and conv1d_bias.dtype != paddle.float32:
+        conv1d_bias = conv1d_bias.cast("float32")
     return MambaInnerFn.apply(xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
                               out_proj_weight, out_proj_bias,
                               A, B, C, D, delta_bias, B_proj_bias, C_proj_bias, delta_softplus)
