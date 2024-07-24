@@ -1,3 +1,6 @@
+causal-conv1d version: https://github.com/Dao-AILab/causal-conv1d/releases/tag/v1.4.0
+mamba-ssm version: https://github.com/state-spaces/mamba/tree/v2.2.2
+
 # Mamba
 
 ![Mamba](assets/selection.png "Selective State Space")

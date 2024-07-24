@@ -4,10 +4,8 @@
 
 #pragma once
 
-#include <c10/util/BFloat16.h>
-#include <c10/util/Half.h>
-#include <c10/cuda/CUDAException.h>  // For C10_CUDA_CHECK and C10_CUDA_KERNEL_LAUNCH_CHECK
-#include <ATen/cuda/Atomic.cuh>  // For atomicAdd on complex
+#include <paddle/phi/common/data_type.h>
+#include <paddle/phi/backends/gpu/gpu_primitives.h>
 
 #ifndef USE_ROCM
     #include <cub/block/block_load.cuh>
@@ -26,7 +24,8 @@
 
 template<typename scalar_t> __device__ __forceinline__ scalar_t conj(scalar_t x);
 template<> __device__ __forceinline__ float conj<float>(float x) { return x; }
-template<> __device__ __forceinline__ complex_t conj<complex_t>(complex_t x) { return std::conj(x); }
+// template<> __device__ __forceinline__ complex_t conj<complex_t>(complex_t x) { return std::conj(x); }
+template<> __device__ __forceinline__ complex_t conj(complex_t x) { return complex_t(x.real, -x.imag); }
 
 template<int kNThreads_, int kNItems_, bool kIsEvenLen_, bool kIsVariableB_, bool kIsVariableC_,
          bool kDeltaSoftplus_, bool kHasZ_, typename input_t_, typename weight_t_>
@@ -228,7 +227,7 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
             if constexpr (!kIsComplex) {
                 A_scaled = A_val * kLog2e;
             } else {
-                A_scaled = complex_t(A_val.real_ * kLog2e, A_val.imag_);
+                A_scaled = complex_t(A_val.real * kLog2e, A_val.imag);
             }
             weight_t B_val, C_val;
             weight_t B_vals[kNItems], C_vals[kNItems];
@@ -315,8 +314,8 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
                     #pragma unroll
                     for (int i = 0; i < kNItems; ++i) {
                         if (i * kNThreads < seqlen_remaining) {
-                            if constexpr (kIsVariableB) { gpuAtomicAdd(dB_cur + i * kNThreads, dB_vals[i]); }
-                            if constexpr (kIsVariableC) { gpuAtomicAdd(dC_cur + i * kNThreads, dC_vals[i]); }
+                            if constexpr (kIsVariableB) { phi::CudaAtomicAdd(dB_cur + i * kNThreads, dB_vals[i]); }
+                            if constexpr (kIsVariableC) { phi::CudaAtomicAdd(dC_cur + i * kNThreads, dC_vals[i]); }
                         }
                     }
                 }
@@ -337,28 +336,28 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
                 #pragma unroll
                 for (int i = 0; i < kNItems; ++i) {
                     // Pytorch's implementation of complex exp (which calls thrust) is very slow
-                    complex_t delta_a_exp = cexp2f(delta_vals[i] * A_scaled);
-                    weight_t B_delta_u_val = !kIsVariableB ? delta_vals[i] * float(u_vals[i]) : B_vals[i] * delta_vals[i] * float(u_vals[i]);
-                    thread_data[i] = make_float4(delta_a_exp.real_, delta_a_exp.imag_, B_delta_u_val.real_, B_delta_u_val.imag_);
+                    complex_t delta_a_exp = cexp2f(delta_vals[i] * float(A_scaled));
+                    weight_t B_delta_u_val = !kIsVariableB ? delta_vals[i] * float(u_vals[i]) : float(B_vals[i]) * delta_vals[i] * float(u_vals[i]);
+                    thread_data[i] = make_float4(delta_a_exp.real, delta_a_exp.imag, B_delta_u_val.real, B_delta_u_val.imag);
                     if (i == 0) {
                         smem_delta_a[threadIdx.x == 0 ? state_idx + (chunk % 2) * MAX_DSTATE : threadIdx.x + 2 * MAX_DSTATE] = delta_a_exp;
                     } else {
-                        thread_reverse_data[i - 1].x = delta_a_exp.real_;
-                        thread_reverse_data[i - 1].y = -delta_a_exp.imag_;
+                        thread_reverse_data[i - 1].x = delta_a_exp.real;
+                        thread_reverse_data[i - 1].y = -delta_a_exp.imag;
                     }
                     complex_t dout_BC = 2 * dout_vals[i]
-                        * conj(!kIsVariableC
+                        * float(conj(!kIsVariableC
                                 ? (!kIsVariableB ? B_val * C_val : C_val)
-                                : (!kIsVariableB ? B_val * C_vals[i] : C_vals[i]));
-                    thread_reverse_data[i].z = dout_BC.real_;
-                    thread_reverse_data[i].w = dout_BC.imag_;
+                                : (!kIsVariableB ? B_val * C_vals[i] : C_vals[i])));
+                    thread_reverse_data[i].z = dout_BC.real;
+                    thread_reverse_data[i].w = dout_BC.imag;
                 }
                 __syncthreads();
                 complex_t delta_a_exp = threadIdx.x == kNThreads - 1
                     ? (chunk == params.n_chunks - 1 ? 1.f : smem_delta_a[state_idx + ((chunk + 1) % 2) * MAX_DSTATE])
                     : smem_delta_a[threadIdx.x + 1 + 2 * MAX_DSTATE];
-                thread_reverse_data[kNItems - 1].x = delta_a_exp.real_;
-                thread_reverse_data[kNItems - 1].y = -delta_a_exp.imag_;
+                thread_reverse_data[kNItems - 1].x = delta_a_exp.real;
+                thread_reverse_data[kNItems - 1].y = -delta_a_exp.imag;
                 // Initialize running total
                 scan_t running_prefix = chunk > 0 && threadIdx.x % 32 == 0 ? x[(chunk - 1) * params.dstate + state_idx] : make_float4(1.f, 0.f, 0.f, 0.f);
                 SSMScanPrefixCallbackOp<weight_t> prefix_op(running_prefix);
@@ -377,21 +376,21 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
                 for (int i = 0; i < kNItems; ++i) {
                     complex_t x = complex_t(thread_data[i].z, thread_data[i].w);
                     complex_t dx = complex_t(thread_reverse_data[i].z, thread_reverse_data[i].w);
-                    float ddelta_u = !kIsVariableB ? dx.real_ : (dx * conj(B_vals[i])).real_;
+                    float ddelta_u = !kIsVariableB ? dx.real : (dx * conj(B_vals[i])).real;
                     if constexpr (!kIsVariableB || !kIsVariableC) {
                         if constexpr (!kIsVariableB) {  // dBC_val is dB_val
-                            dBC_val += (2 * dout_vals[i]) * conj(!kIsVariableC ? x : x * C_vals[i]);
+                            dBC_val += weight_t((2 * dout_vals[i]) * float(conj(!kIsVariableC ? x : x * C_vals[i])));
                         } else {  // dBC_val is dC_val
-                            dBC_val += (2 * dout_vals[i]) * conj(x);
+                            dBC_val += weight_t((2 * dout_vals[i]) * float(conj(x)));
                         }
                     }
-                    const complex_t a_conj = conj(x - (!kIsVariableB ? delta_vals[i] * float(u_vals[i]) : delta_vals[i] * float(u_vals[i]) * B_vals[i]));
+                    const complex_t a_conj = conj(float(x) - (!kIsVariableB ? delta_vals[i] * float(u_vals[i]) : delta_vals[i] * float(u_vals[i]) * float(B_vals[i])));
                     du_vals[i] += ddelta_u * delta_vals[i];
-                    ddelta_vals[i] += ddelta_u * float(u_vals[i]) + (dx * conj(A_val) * a_conj).real_;
-                    dA_val += delta_vals[i] * dx * a_conj;
-                    if constexpr (kIsVariableB) { dB_vals[i] = dx * delta_vals[i] * float(u_vals[i]); }
+                    ddelta_vals[i] += ddelta_u * float(u_vals[i]) + (dx * conj(A_val) * a_conj).real;
+                    dA_val += complex_t(delta_vals[i]) * dx * a_conj;
+                    if constexpr (kIsVariableB) { dB_vals[i] = float(dx) * delta_vals[i] * float(u_vals[i]); }
                     if constexpr (kIsVariableC) {
-                        dC_vals[i] = (2 * dout_vals[i]) * conj(!kIsVariableB ? x * B_val : x);
+                        dC_vals[i] = (2 * dout_vals[i]) * float(conj(!kIsVariableB ? x * B_val : x));
                     }
                 }
                 // Block-exchange to make the atomicAdd's coalesced, otherwise they're much slower
@@ -400,16 +399,16 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
                     if constexpr (kIsVariableB) {
                         #pragma unroll
                         for (int i = 0; i < kNItems; ++i) {
-                            dB_vals_f[i * 2] = dB_vals[i].real_;
-                            dB_vals_f[i * 2 + 1] = dB_vals[i].imag_;
+                            dB_vals_f[i * 2] = dB_vals[i].real;
+                            dB_vals_f[i * 2 + 1] = dB_vals[i].imag;
                         }
                         typename Ktraits::BlockExchangeT(smem_exchange).BlockedToStriped(dB_vals_f, dB_vals_f);
                     }
                     if constexpr (kIsVariableC) {
                         #pragma unroll
                         for (int i = 0; i < kNItems; ++i) {
-                            dC_vals_f[i * 2] = dC_vals[i].real_;
-                            dC_vals_f[i * 2 + 1] = dC_vals[i].imag_;
+                            dC_vals_f[i * 2] = dC_vals[i].real;
+                            dC_vals_f[i * 2 + 1] = dC_vals[i].imag;
                         }
                         auto &smem_exchange_C = !kIsVariableB ? smem_exchange : smem_exchange1;
                         typename Ktraits::BlockExchangeT(smem_exchange_C).BlockedToStriped(dC_vals_f, dC_vals_f);
@@ -420,13 +419,13 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
                     #pragma unroll
                     for (int i = 0; i < kNItems * 2; ++i) {
                         if (i * kNThreads < seqlen_remaining) {
-                            if constexpr (kIsVariableB) { gpuAtomicAdd(dB_cur + i * kNThreads, dB_vals_f[i]); }
-                            if constexpr (kIsVariableC) { gpuAtomicAdd(dC_cur + i * kNThreads, dC_vals_f[i]); }
+                            if constexpr (kIsVariableB) { phi::CudaAtomicAdd(dB_cur + i * kNThreads, dB_vals_f[i]); }
+                            if constexpr (kIsVariableC) { phi::CudaAtomicAdd(dC_cur + i * kNThreads, dC_vals_f[i]); }
                         }
                     }
                 }
                 if constexpr (!kIsVariableB || !kIsVariableC) {
-                    float4 dA_dBC_val = make_float4(dA_val.real_, dA_val.imag_, dBC_val.real_, dBC_val.imag_);
+                    float4 dA_dBC_val = make_float4(dA_val.real, dA_val.imag, dBC_val.real, dBC_val.imag);
                     dA_dBC_val = typename Ktraits::BlockReduceT(smem_reduce).Sum(dA_dBC_val);
                     dA_val = complex_t(dA_dBC_val.x, dA_dBC_val.y);
                     dBC_val = complex_t(dA_dBC_val.z, dA_dBC_val.w);
@@ -472,23 +471,23 @@ void selective_scan_bwd_kernel(SSMParamsBwd params) {
     }
     if (params.dD_ptr != nullptr) {
         dD_val = typename Ktraits::BlockReduceFloatT(smem_reduce_float).Sum(dD_val);
-        if (threadIdx.x == 0) { gpuAtomicAdd(dD, dD_val); }
+        if (threadIdx.x == 0) { phi::CudaAtomicAdd(dD, dD_val); }
     }
     if (params.ddelta_bias_ptr != nullptr) {
         __syncthreads();
         ddelta_bias_val = typename Ktraits::BlockReduceFloatT(smem_reduce_float).Sum(ddelta_bias_val);
-        if (threadIdx.x == 0) { gpuAtomicAdd(ddelta_bias, ddelta_bias_val); }
+        if (threadIdx.x == 0) { phi::CudaAtomicAdd(ddelta_bias, ddelta_bias_val); }
     }
     for (int state_idx = threadIdx.x; state_idx < params.dstate; state_idx += blockDim.x) {
-        gpuAtomicAdd(&(dA[state_idx * params.dA_dstate_stride]), smem_da[state_idx]);
+        phi::CudaAtomicAdd(&(dA[state_idx * params.dA_dstate_stride]), smem_da[state_idx]);
         weight_t dBC_val;
         if (!kIsVariableB || !kIsVariableC) { dBC_val = smem_dbc[state_idx]; }
         if constexpr (!kIsVariableB) {
-            gpuAtomicAdd(&(dB[state_idx * params.dB_dstate_stride]),
+            phi::CudaAtomicAdd(&(dB[state_idx * params.dB_dstate_stride]),
                          !kIsVariableC ? dBC_val * conj(C[state_idx * params.C_dstate_stride]) : dBC_val);
         }
         if constexpr (!kIsVariableC) {
-            gpuAtomicAdd(&(dC[state_idx * params.dC_dstate_stride]),
+            phi::CudaAtomicAdd(&(dC[state_idx * params.dC_dstate_stride]),
                         !kIsVariableB ? dBC_val * conj(B[state_idx * params.B_dstate_stride]) : dBC_val);
         }
     }
@@ -513,18 +512,17 @@ void selective_scan_bwd_launch(SSMParamsBwd &params, cudaStream_t stream) {
                         if (kSmemSize >= 48 * 1024) {
 
                             #ifndef USE_ROCM
-                            C10_CUDA_CHECK(cudaFuncSetAttribute(
-                                kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+                            cudaFuncSetAttribute(
+                                kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize);
                             #else
-                            C10_CUDA_CHECK(cudaFuncSetAttribute(
-                                (void *) kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+                            cudaFuncSetAttribute(
+                                (void *) kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize);
                             std::cerr << "Warning (selective_scan_bwd_kernel): attempting to set maxDynamicSharedMemorySize on an AMD GPU which is currently a non-op (in ROCm versions <= 6.1). This might lead to undefined behavior. \n" << std::endl;
                             #endif
 
                         }
 
                         kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
-                        C10_CUDA_KERNEL_LAUNCH_CHECK();
                     });
                 });
             });

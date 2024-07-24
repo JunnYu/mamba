@@ -4,13 +4,15 @@
 
 #pragma once
 
-#ifndef USE_ROCM
-    #include <cuda_bf16.h>
-#else
-    #include <hip/hip_bf16.h>
+#if defined(CUDA_BFLOAT16_AVAILABLE)  
+    #ifndef USE_ROCM  
+        #include <cuda_bf16.h>  
+    #else  
+        #include <hip/hip_bf16.h>  
+    #endif
 #endif
 #include <cuda_fp16.h>
-#include <c10/util/complex.h>  // For scalar_value_type
+#include <paddle/phi/common/data_type.h>
 
 
 #ifndef USE_ROCM
@@ -40,7 +42,7 @@
 
 #define MAX_DSTATE 256
 
-using complex_t = c10::complex<float>;
+using complex_t = phi::dtype::complex<float>;
 
 inline __device__ float2 operator+(const float2 & a, const float2 & b){
     return {a.x + b.x, a.y + b.y};
@@ -94,8 +96,8 @@ struct Converter{
 };
 
 template<int N>
-struct Converter<at::Half, N>{
-    static inline __device__ void to_float(const at::Half (&src)[N], float (&dst)[N]) {
+struct Converter<phi::dtype::float16, N>{
+    static inline __device__ void to_float(const phi::dtype::float16 (&src)[N], float (&dst)[N]) {
         static_assert(N % 2 == 0);
         auto &src2 = reinterpret_cast<const half2 (&)[N / 2]>(src);
         auto &dst2 = reinterpret_cast<float2 (&)[N / 2]>(dst);
@@ -106,8 +108,8 @@ struct Converter<at::Half, N>{
 
 #if __CUDA_ARCH__ >= 800
 template<int N>
-struct Converter<at::BFloat16, N>{
-    static inline __device__ void to_float(const at::BFloat16 (&src)[N], float (&dst)[N]) {
+struct Converter<phi::dtype::bfloat16, N>{
+    static inline __device__ void to_float(const phi::dtype::bfloat16 (&src)[N], float (&dst)[N]) {
         static_assert(N % 2 == 0);
         auto &src2 = reinterpret_cast<const nv_bfloat162 (&)[N / 2]>(src);
         auto &dst2 = reinterpret_cast<float2 (&)[N / 2]>(dst);
@@ -122,16 +124,16 @@ struct Converter<at::BFloat16, N>{
 // From https://stackoverflow.com/questions/9860711/cucomplex-h-and-exp
 // and https://forums.developer.nvidia.com/t/complex-number-exponential-function/24696
 __device__ __forceinline__ complex_t cexp2f(complex_t z) {
-    float t = exp2f(z.real_);
+    float t = exp2f(z.real);
     float c, s;
-    sincosf(z.imag_, &s, &c);
+    sincosf(z.imag, &s, &c);
     return complex_t(c * t, s * t);
 }
 
 __device__ __forceinline__ complex_t cexpf(complex_t z) {
-    float t = expf(z.real_);
+    float t = expf(z.real);
     float c, s;
-    sincosf(z.imag_, &s, &c);
+    sincosf(z.imag, &s, &c);
     return complex_t(c * t, s * t);
 }
 
@@ -153,7 +155,7 @@ struct SSMScanOp<complex_t> {
         complex_t b1 = complex_t(ab1.z, ab1.w);
         complex_t out_a = a1 * a0;
         complex_t out_b = a1 * b0 + b1;
-        return make_float4(out_a.real_, out_a.imag_, out_b.real_, out_b.imag_);
+        return make_float4(out_a.real, out_a.imag, out_b.real, out_b.imag);
     }
 };
 

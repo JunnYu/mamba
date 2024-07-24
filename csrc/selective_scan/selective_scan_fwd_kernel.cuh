@@ -4,9 +4,7 @@
 
 #pragma once
 
-#include <c10/util/BFloat16.h>
-#include <c10/util/Half.h>
-#include <c10/cuda/CUDAException.h>  // For C10_CUDA_CHECK and C10_CUDA_KERNEL_LAUNCH_CHECK
+#include <paddle/phi/common/data_type.h>
 
 #ifndef USE_ROCM
     #include <cub/block/block_load.cuh>
@@ -175,7 +173,7 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                 if constexpr (!kIsComplex) {
                     A_val[r] *= kLog2e;
                 } else {
-                    A_val[r].real_ *= kLog2e;
+                    A_val[r].real *= kLog2e;
                 }
             }
             // This variable holds B * C if both B and C are constant across seqlen. If only B varies
@@ -227,9 +225,9 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                         }
                     } else {
                         // Pytorch's implementation of complex exp (which calls thrust) is very slow
-                        complex_t delta_a_exp = cexp2f(delta_vals[r][i] * A_val[r]);
-                        weight_t B_delta_u_val = !kIsVariableB ? delta_u_vals[r][i] : B_vals[i] * delta_u_vals[r][i];
-                        thread_data[i] = make_float4(delta_a_exp.real_, delta_a_exp.imag_, B_delta_u_val.real_, B_delta_u_val.imag_);
+                        complex_t delta_a_exp = cexp2f(delta_vals[r][i] * float(A_val[r]));
+                        weight_t B_delta_u_val = !kIsVariableB ? delta_u_vals[r][i] : float(B_vals[i]) * delta_u_vals[r][i];
+                        thread_data[i] = make_float4(delta_a_exp.real, delta_a_exp.imag, B_delta_u_val.real, B_delta_u_val.imag);
                         if constexpr (!Ktraits::kIsEvenLen) {  // So that the last state is correct
                             if (threadIdx.x * kNItems + i >= params.seqlen - chunk * kChunkSize) {
                                 thread_data[i] = make_float4(1.f, 0.f, 0.f, 0.f);
@@ -265,7 +263,7 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
                     if constexpr (!kIsComplex) {
                         out_vals[r][i] += thread_data[i].y * C_val;
                     } else {
-                        out_vals[r][i] += (complex_t(thread_data[i].z, thread_data[i].w) * C_val).real_ * 2;
+                        out_vals[r][i] += (complex_t(thread_data[i].z, thread_data[i].w) * C_val).real * 2;
                     }
                 }
             }
@@ -330,17 +328,16 @@ void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
                     
                     if (kSmemSize >= 48 * 1024) {
                         #ifndef USE_ROCM
-                        C10_CUDA_CHECK(cudaFuncSetAttribute(
-                            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+                        cudaFuncSetAttribute(
+                            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize);
                         #else
-                        C10_CUDA_CHECK(cudaFuncSetAttribute(
-                            (void *) kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+                        cudaFuncSetAttribute(
+                            (void *) kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize);
                             std::cerr << "Warning (selective_scan_fwd_kernel): attempting to set maxDynamicSharedMemorySize on an AMD GPU which is currently a non-op (in ROCm versions <= 6.1). This might lead to undefined behavior. \n" << std::endl;
                         #endif
                     }
 
                     kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
-                    C10_CUDA_KERNEL_LAUNCH_CHECK();
                 });
             });
         });
