@@ -43,16 +43,13 @@ for arch in cc_list:
     cc_flag.append("-gencode")
     cc_flag.append(f"arch=compute_{arch},code=sm_{arch}")
 
-support_complex = False
+# complex has bug
 real_complex_list = ["real"]
 dtype_list = ["fp16", "fp32"]
 
 if cc > 75:
     dtype_list.insert(1, "bf16")
     cc_flag.append("-DCUDA_BFLOAT16_AVAILABLE")
-    
-if support_complex:
-    real_complex_list.append("complex")
     
 sources = [
     "csrc/selective_scan/selective_scan.cpp",

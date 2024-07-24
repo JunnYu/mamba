@@ -179,7 +179,7 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
         if i == u.shape[2] - 1:
             last_state = x
         if y.is_complex():
-            y = y.real * 2
+            y = y.real() * 2
         ys.append(y)
     y = paddle.stack(ys, axis=2) # (batch dim L)
     out = y if D is None else y + u * rearrange(D, "d -> d 1")

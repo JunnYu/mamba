@@ -32,8 +32,8 @@ paddle.Tensor.requires_grad_ = requires_grad_
 
 @pytest.mark.parametrize('wtype', [paddle.float32])
 # @pytest.mark.parametrize('wtype', [paddle.float32])
-# @pytest.mark.parametrize('itype', [paddle.float32, paddle.float16, paddle.bfloat16])
-@pytest.mark.parametrize('itype', [paddle.float32])
+@pytest.mark.parametrize('itype', [paddle.float32, paddle.float16, paddle.bfloat16])
+# @pytest.mark.parametrize('itype', [paddle.float32])
 # @pytest.mark.parametrize('seqlen', [8, 16, 32, 64, 128, 256, 372, 512, 784, 1024, 1134, 2048, 4096])
 @pytest.mark.parametrize('seqlen', [128, 256, 512, 1024, 2048, 4096])
 # @pytest.mark.parametrize('seqlen', [128])
@@ -137,8 +137,8 @@ def test_selective_scan(is_variable_B, is_variable_C, varBC_groups, has_D, has_z
         assert paddle.allclose(state, state_ref, rtol=rtol, atol=atol)
 
     g = paddle.randn(out.shape, dtype=out.dtype)
-    out_ref.backward(g)
-    out.backward(g)
+    out_ref.backward(g.cast(out_ref.dtype))
+    out.backward(g.cast(out.dtype))
 
     print(f'du max diff: {(u.grad - u_ref.grad).abs().max().item()}')
     print(f'ddelta max diff: {(delta.grad - delta_ref.grad).abs().max().item()}')
@@ -168,9 +168,9 @@ def test_selective_scan(is_variable_B, is_variable_C, varBC_groups, has_D, has_z
 
 
 # @pytest.mark.parametrize('wtype', [paddle.float32])
-@pytest.mark.parametrize('wtype', [paddle.float32, paddle.complex64])
-# @pytest.mark.parametrize('itype', [paddle.float32, paddle.float16, paddle.bfloat16])
-@pytest.mark.parametrize('itype', [paddle.float32])
+@pytest.mark.parametrize('wtype', [paddle.float32])
+@pytest.mark.parametrize('itype', [paddle.float32, paddle.float16, paddle.bfloat16])
+# @pytest.mark.parametrize('itype', [paddle.float32])
 # @pytest.mark.parametrize('seqlen', [8, 16, 32, 64, 128, 256, 372, 512, 784, 1024, 1134, 2048, 4096])
 @pytest.mark.parametrize('seqlen', [128])
 @pytest.mark.parametrize("is_variable_C", [False, True])
@@ -243,8 +243,8 @@ def test_mamba_inner_fn(is_variable_B, is_variable_C, seqlen, itype, wtype):
     assert paddle.allclose(out, out_ref, rtol=rtol, atol=atol)
 
     g = paddle.randn(out.shape, dtype=out.dtype)
-    out_ref.backward(g)
-    out.backward(g)
+    out_ref.backward(g.cast(out_ref.dtype))
+    out.backward(g.cast(out.dtype))
 
     print(f'dxz max diff: {(xz.grad - xz_ref.grad).abs().max().item()}')
     print(f'dA max diff: {(A.grad - A_ref.grad).abs().max().item()}')
