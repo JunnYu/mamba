@@ -17,7 +17,7 @@ import triton
 import triton.language as tl
 
 from einops import rearrange, repeat
-from paddle.amp.auto_cast import amp_global_state, _in_amp_guard
+from paddle.amp.auto_cast import amp_global_state
 
 try:
     import causal_conv1d_cuda_paddle as causal_conv1d_cuda
@@ -815,7 +815,7 @@ class MambaSplitConv1dScanCombinedFn(paddle.autograd.PyLayer):
                 out = out01
         ctx.outproj_weight_dtype = outproj_weight.dtype if outproj_weight is not None else None
         if outproj_weight is not None:
-            if _in_amp_guard():
+            if paddle.is_autocast_enabled():
                 dtype = amp_global_state().amp_dtype
                 out, outproj_weight = out.cast(dtype), outproj_weight.cast(dtype)
                 outproj_bias = outproj_bias.cast(dtype) if outproj_bias is not None else None

@@ -19,7 +19,7 @@ try:
 except ImportError:
     selective_scan_cuda = None
 from paddle.distributed import fleet
-from paddle.amp.auto_cast import amp_global_state, _in_amp_guard
+from paddle.amp.auto_cast import amp_global_state
 
 
 class SelectiveScanFn(paddle.autograd.PyLayer):
@@ -205,7 +205,7 @@ class MambaInnerFn(paddle.autograd.PyLayer):
         L = xz.shape[-1]
         delta_rank = delta_proj_weight.shape[1]
         d_state = A.shape[-1] * (1 if not A.is_complex() else 2)
-        if _in_amp_guard():
+        if paddle.is_autocast_enabled():
             amp_dtype = amp_global_state().amp_dtype
             x_proj_weight = x_proj_weight.cast(dtype=amp_dtype)
             delta_proj_weight = delta_proj_weight.cast(dtype=amp_dtype)

@@ -14,7 +14,7 @@ import paddle.nn as nn
 import paddle.nn.functional as F
 import triton
 import triton.language as tl
-from paddle.amp.auto_cast import amp_global_state, _in_amp_guard
+from paddle.amp.auto_cast import amp_global_state
 from .utils import custom_fwd, custom_bwd
 
 
@@ -1023,7 +1023,7 @@ class LayerNormLinearFn(paddle.autograd.PyLayer):
             else (paddle.float32 if residual_in_fp32 else None)
         )
         amp_dtype = amp_global_state().amp_dtype
-        is_autocast_enabled = _in_amp_guard()
+        is_autocast_enabled = paddle.is_autocast_enabled()
         y, _, mean, rstd, residual_out, *rest = _layer_norm_fwd(
             x,
             norm_weight,
