@@ -1,0 +1,71 @@
+.PHONY: deps_table_update modified_only_fixup test
+
+# make sure to test the local checkout in scripts and not the pre-installed one (don't use quotes!)
+export PYTHONPATH = src
+
+check_dirs := src tests csrc
+
+modified_only_fixup:
+	$(eval modified_py_files := $(shell python utils/get_modified_files.py $(check_dirs)))
+	@if test -n "$(modified_py_files)"; then \
+		echo "Checking/fixing $(modified_py_files)"; \
+		ruff check $(modified_py_files) --fix; \
+		ruff format $(modified_py_files);\
+	else \
+		echo "No library .py files were modified"; \
+	fi
+
+# Update src/diffusers/dependency_versions_table.py
+
+deps_table_update:
+	@python setup.py deps_table_update
+
+deps_table_check_updated:
+	@md5sum src/paddlenlp_gpu_ops/dependency_versions_table.py > md5sum.saved
+	@python setup.py deps_table_update
+	@md5sum -c --quiet md5sum.saved || (printf "\nError: the version dependency table is outdated.\nPlease run 'make fixup' or 'make style' and commit the changes.\n\n" && exit 1)
+	@rm md5sum.saved
+
+# autogenerating code
+
+autogenerate_code: deps_table_update
+
+
+# this target runs checks on all files
+
+quality:
+	ruff check $(check_dirs) setup.py
+	ruff format --check $(check_dirs) setup.py
+
+
+# this target runs checks on all files and potentially modifies some of them
+
+style:
+	ruff check $(check_dirs) setup.py --fix
+	ruff format $(check_dirs) setup.py
+	${MAKE} autogenerate_code
+
+# Super fast fix and check target that only works on relevant modified files since the branch was made
+
+fixup: modified_only_fixup autogenerate_code
+
+
+# Run tests for the library
+
+test:
+	python -m pytest -n auto --dist=loadfile -s -v ./tests/
+
+
+# Release stuff
+
+pre-release:
+	python utils/release.py
+
+pre-patch:
+	python utils/release.py --patch
+
+post-release:
+	python utils/release.py --post_release
+
+post-patch:
+	python utils/release.py --post_release --patch
